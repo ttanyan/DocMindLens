@@ -1,24 +1,16 @@
 # Copyright (c) Opendatalab. All rights reserved.
 import posixpath
 from io import BytesIO
-from pathlib import PurePosixPath
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 
 from loguru import logger
 from lxml import etree
-
-from mineru.backend.utils.office_image import create_text_placeholder
 
 
 PACKAGE_RELATIONSHIPS_NS = (
     "http://schemas.openxmlformats.org/package/2006/relationships"
 )
 RELATIONSHIP_TAG = f"{{{PACKAGE_RELATIONSHIPS_NS}}}Relationship"
-CORRUPT_MEDIA_IMAGE_FORMATS = {
-    ".png": "PNG",
-    ".jpg": "JPEG",
-    ".jpeg": "JPEG",
-}
 
 
 def normalize_docx_package(file_bytes: bytes) -> bytes:
@@ -26,12 +18,15 @@ def normalize_docx_package(file_bytes: bytes) -> bytes:
     with ZipFile(BytesIO(file_bytes)) as source:
         loaded_members: list[tuple[ZipInfo, bytes]] = []
         package_members: set[str] = set()
+        skipped_members: set[str] = set()
         changed = False
 
         for info in source.infolist():
-            member_data, member_changed = _read_member_best_effort(source, info)
-            if member_changed:
+            member_data = _read_member_best_effort(source, info)
+            if member_data is None:
+                skipped_members.add(info.filename)
                 changed = True
+                continue
             loaded_members.append((info, member_data))
             package_members.add(info.filename)
 
@@ -43,6 +38,7 @@ def normalize_docx_package(file_bytes: bytes) -> bytes:
                     info.filename,
                     member_data,
                     package_members,
+                    skipped_members,
                 )
                 if normalized_data != member_data:
                     changed = True
@@ -54,53 +50,31 @@ def normalize_docx_package(file_bytes: bytes) -> bytes:
     return _write_package(rewritten_members)
 
 
-def _read_member_best_effort(source: ZipFile, info: ZipInfo) -> tuple[bytes, bool]:
-    """读取 ZIP 成员；损坏的常见图片资源降级为占位图，关键成员继续失败。"""
+def _read_member_best_effort(source: ZipFile, info: ZipInfo) -> bytes | None:
+    """读取 ZIP 成员；损坏的媒体资源可跳过，关键结构成员继续失败。"""
     try:
-        return source.read(info.filename), False
+        return source.read(info.filename)
     except BadZipFile as exc:
-        if _is_replaceable_corrupt_media(info.filename):
+        if _is_skippable_corrupt_member(info.filename):
             logger.warning(
-                f"Replacing corrupt DOCX media member {info.filename} with placeholder: {exc}"
+                f"Skipping corrupt non-critical DOCX media member {info.filename}: {exc}"
             )
-            return _create_corrupt_media_placeholder(info.filename), True
+            return None
         raise
 
 
-def _is_replaceable_corrupt_media(filename: str) -> bool:
-    """判断损坏成员是否属于可用占位图替换的 DOCX 图片资源。"""
-    path = PurePosixPath(filename)
-    return (
-        filename.startswith("word/media/")
-        and path.suffix.lower() in CORRUPT_MEDIA_IMAGE_FORMATS
-    )
-
-
-def _create_corrupt_media_placeholder(filename: str) -> bytes:
-    """按原媒体扩展名生成损坏图片占位图字节。"""
-    suffix = PurePosixPath(filename).suffix.lower()
-    image_format = CORRUPT_MEDIA_IMAGE_FORMATS.get(suffix, "PNG")
-    placeholder = create_text_placeholder(
-        (320, 180),
-        [
-            "Corrupt image",
-            "placeholder",
-        ],
-    )
-    if image_format == "JPEG":
-        placeholder = placeholder.convert("RGB")
-
-    output = BytesIO()
-    placeholder.save(output, format=image_format)
-    return output.getvalue()
+def _is_skippable_corrupt_member(filename: str) -> bool:
+    """判断损坏成员是否属于可降级丢弃的 DOCX 媒体资源。"""
+    return filename.startswith("word/media/")
 
 
 def _remove_missing_internal_relationships(
     rels_filename: str,
     rels_xml: bytes,
     package_members: set[str],
+    skipped_members: set[str],
 ) -> bytes:
-    """删除指向缺失或非法内部成员的关系，避免 python-docx 加载时崩溃。"""
+    """删除指向缺失、非法或已跳过成员的关系，避免 python-docx 加载时崩溃。"""
     try:
         parser = etree.XMLParser(resolve_entities=False, remove_blank_text=False)
         root = etree.fromstring(rels_xml, parser)
@@ -121,7 +95,11 @@ def _remove_missing_internal_relationships(
             rels_filename,
             relationship.get("Target"),
         )
-        if resolved_target is not None and resolved_target in package_members:
+        if (
+            resolved_target is not None
+            and resolved_target in package_members
+            and resolved_target not in skipped_members
+        ):
             continue
 
         root.remove(relationship)
