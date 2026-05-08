@@ -1,6 +1,7 @@
 # Copyright (c) Opendatalab. All rights reserved.
 import posixpath
 from io import BytesIO
+from typing import Iterator
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 
 from loguru import logger
@@ -16,19 +17,28 @@ RELATIONSHIP_TAG = f"{{{PACKAGE_RELATIONSHIPS_NS}}}Relationship"
 def normalize_docx_package(file_bytes: bytes) -> bytes:
     """在进入 python-docx 前修复 DOCX 包级容错问题。"""
     with ZipFile(BytesIO(file_bytes)) as source:
+        package_members = {info.filename for info in source.infolist()}
+        reachable_members, relationship_graph_complete = (
+            _collect_relationship_reachable_members(source, package_members)
+        )
+        trusted_reachable_members = (
+            reachable_members if relationship_graph_complete else None
+        )
         loaded_members: list[tuple[ZipInfo, bytes]] = []
-        package_members: set[str] = set()
         skipped_members: set[str] = set()
         changed = False
 
         for info in source.infolist():
-            member_data = _read_member_best_effort(source, info)
+            member_data = _read_member_best_effort(
+                source,
+                info,
+                trusted_reachable_members,
+            )
             if member_data is None:
                 skipped_members.add(info.filename)
                 changed = True
                 continue
             loaded_members.append((info, member_data))
-            package_members.add(info.filename)
 
         rewritten_members: list[tuple[ZipInfo, bytes]] = []
         for info, member_data in loaded_members:
@@ -50,22 +60,125 @@ def normalize_docx_package(file_bytes: bytes) -> bytes:
     return _write_package(rewritten_members)
 
 
-def _read_member_best_effort(source: ZipFile, info: ZipInfo) -> bytes | None:
-    """读取 ZIP 成员；损坏的媒体资源可跳过，关键结构成员继续失败。"""
+def _collect_relationship_reachable_members(
+    source: ZipFile,
+    package_members: set[str],
+) -> tuple[set[str], bool]:
+    """按 OPC relationship 图收集 python-docx/mammoth 可能访问的包成员。"""
+    reachable_members = {"[Content_Types].xml"}
+    root_rels = "_rels/.rels"
+    if root_rels not in package_members:
+        return reachable_members, False
+
+    relationship_queue = [root_rels]
+    processed_relationships: set[str] = set()
+    graph_complete = True
+
+    while relationship_queue:
+        rels_filename = relationship_queue.pop()
+        if rels_filename in processed_relationships:
+            continue
+
+        processed_relationships.add(rels_filename)
+        reachable_members.add(rels_filename)
+
+        rels_xml = source.read(rels_filename)
+        try:
+            targets = list(
+                _iter_internal_relationship_targets(rels_filename, rels_xml)
+            )
+        except etree.XMLSyntaxError:
+            graph_complete = False
+            continue
+
+        for target in targets:
+            if target not in package_members:
+                continue
+            reachable_members.add(target)
+
+            target_rels = _relationship_part_rels_filename(target)
+            if (
+                target_rels is not None
+                and target_rels in package_members
+                and target_rels not in processed_relationships
+            ):
+                relationship_queue.append(target_rels)
+
+    return reachable_members, graph_complete
+
+
+def _iter_internal_relationship_targets(
+    rels_filename: str,
+    rels_xml: bytes,
+) -> Iterator[str]:
+    """解析 .rels 文件，逐个返回有效的内部 relationship 目标路径。"""
+    parser = etree.XMLParser(resolve_entities=False, remove_blank_text=False)
+    root = etree.fromstring(rels_xml, parser)
+    for relationship in root:
+        if not _is_relationship_element(relationship):
+            continue
+        if relationship.get("TargetMode") == "External":
+            continue
+
+        resolved_target = _resolve_internal_relationship_target(
+            rels_filename,
+            relationship.get("Target"),
+        )
+        if resolved_target is not None:
+            yield resolved_target
+
+
+def _relationship_part_rels_filename(part_name: str) -> str | None:
+    """根据包内 part 路径推导它对应的 relationship 成员路径。"""
+    normalized_part_name = part_name.replace("\\", "/")
+    if normalized_part_name in {"", "."} or normalized_part_name.startswith("../"):
+        return None
+
+    part_dir, part_basename = posixpath.split(normalized_part_name)
+    if not part_basename:
+        return None
+    if part_dir:
+        return f"{part_dir}/_rels/{part_basename}.rels"
+    return f"_rels/{part_basename}.rels"
+
+
+def _read_member_best_effort(
+    source: ZipFile,
+    info: ZipInfo,
+    reachable_members: set[str] | None,
+) -> bytes | None:
+    """读取 ZIP 成员；仅跳过不可达坏成员或可降级媒体，关键成员继续失败。"""
     try:
         return source.read(info.filename)
     except BadZipFile as exc:
-        if _is_skippable_corrupt_member(info.filename):
+        if _is_skippable_corrupt_member(info.filename, reachable_members):
             logger.warning(
-                f"Skipping corrupt non-critical DOCX media member {info.filename}: {exc}"
+                "Skipping corrupt non-critical DOCX member {}: {}",
+                info.filename,
+                exc,
             )
             return None
         raise
 
 
-def _is_skippable_corrupt_member(filename: str) -> bool:
-    """判断损坏成员是否属于可降级丢弃的 DOCX 媒体资源。"""
-    return filename.startswith("word/media/")
+def _is_skippable_corrupt_member(
+    filename: str,
+    reachable_members: set[str] | None,
+) -> bool:
+    """判断损坏成员是否可安全丢弃，避免吞掉正文结构损坏。"""
+    if filename.startswith("word/media/"):
+        return True
+    return reachable_members is not None and filename not in reachable_members
+
+
+def _is_relationship_element(element: etree._Element) -> bool:
+    """判断 XML 节点是否为 Relationship 元素，兼容缺省命名空间。"""
+    if element.tag == RELATIONSHIP_TAG:
+        return True
+    try:
+        return etree.QName(element).localname == "Relationship"
+    except ValueError:
+        return False
 
 
 def _remove_missing_internal_relationships(
@@ -83,10 +196,7 @@ def _remove_missing_internal_relationships(
 
     removed_count = 0
     for relationship in list(root):
-        if (
-            relationship.tag != RELATIONSHIP_TAG
-            and etree.QName(relationship).localname != "Relationship"
-        ):
+        if not _is_relationship_element(relationship):
             continue
         if relationship.get("TargetMode") == "External":
             continue
