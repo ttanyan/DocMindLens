@@ -179,11 +179,83 @@ def _build_front_cache(rows, max_header_rows: int = MAX_HEADER_ROWS) -> tuple[li
     return front_header_info, front_first_data_row_metrics
 
 
-def _find_table_body_span(table_block):
+def _find_table_body_block(table_block):
+    """查找 table block 中的主体子块。"""
     for block in table_block["blocks"]:
-        if block["type"] == BlockType.TABLE_BODY and block["lines"] and block["lines"][0]["spans"]:
-            return block["lines"][0]["spans"][0]
+        if block["type"] == BlockType.TABLE_BODY:
+            return block
     return None
+
+
+def _find_table_body_span(table_block):
+    body_block = _find_table_body_block(table_block)
+    if body_block and body_block["lines"] and body_block["lines"][0]["spans"]:
+        return body_block["lines"][0]["spans"][0]
+    return None
+
+
+def _is_continuation_caption(caption_block) -> bool:
+    """判断 caption 文本是否带有续表标记。"""
+    caption_text = full_to_half(merge_para_with_text(caption_block).strip()).lower()
+    return (
+        any(caption_text.endswith(marker.lower()) for marker in CONTINUATION_END_MARKERS)
+        or any(marker.lower() in caption_text for marker in CONTINUATION_INLINE_MARKERS)
+    )
+
+
+def _is_post_table_non_continuation_caption(table_block, caption_block) -> bool:
+    """判断 caption 是否是误挂到表格下方的新段落标题。
+
+    这类 caption 位于 table body 下方，且不含续表标记；它不应作为
+    当前表的新标题阻断跨页合并，后续会被恢复成独立 text block。
+    """
+    if _is_continuation_caption(caption_block):
+        return False
+
+    body_block = _find_table_body_block(table_block)
+    if body_block is None:
+        return False
+
+    body_bbox = body_block.get("bbox")
+    caption_bbox = caption_block.get("bbox")
+    if not body_bbox or not caption_bbox:
+        return False
+
+    return caption_bbox[1] >= body_bbox[3]
+
+
+def _get_post_table_caption_blocks(table_block):
+    """收集当前表格下方、需要恢复为普通文本的非续表 caption。"""
+    return [
+        block for block in table_block["blocks"]
+        if block["type"] == BlockType.TABLE_CAPTION
+        and _is_post_table_non_continuation_caption(table_block, block)
+    ]
+
+
+def _restore_post_table_captions_as_text(page_info, table_block, caption_blocks) -> None:
+    """将误挂到表格下方的 caption 迁回当前页，作为独立 text block 输出。"""
+    if not caption_blocks:
+        return
+
+    para_blocks = page_info.get("para_blocks", [])
+    try:
+        insert_idx = para_blocks.index(table_block) + 1
+    except ValueError:
+        return
+
+    restored_blocks = []
+    for caption_block in caption_blocks:
+        text_block = deepcopy(caption_block)
+        text_block["type"] = BlockType.TEXT
+        restored_blocks.append(text_block)
+
+    para_blocks[insert_idx:insert_idx] = restored_blocks
+    restored_caption_ids = {id(block) for block in caption_blocks}
+    table_block["blocks"] = [
+        block for block in table_block["blocks"]
+        if id(block) not in restored_caption_ids
+    ]
 
 
 def _refresh_table_state_metrics(state: TableMergeState) -> None:
@@ -540,16 +612,14 @@ def can_merge_tables(current_state: TableMergeState, previous_state: TableMergeS
     caption_blocks = [
         block for block in current_table_block["blocks"] if block["type"] == BlockType.TABLE_CAPTION
     ]
-    if caption_blocks:
-        has_continuation_marker = False
-        for block in caption_blocks:
-            caption_text = full_to_half(merge_para_with_text(block).strip()).lower()
-            if (
-                any(caption_text.endswith(marker.lower()) for marker in CONTINUATION_END_MARKERS)
-                or any(marker.lower() in caption_text for marker in CONTINUATION_INLINE_MARKERS)
-            ):
-                has_continuation_marker = True
-                break
+    merge_caption_blocks = [
+        block for block in caption_blocks
+        if not _is_post_table_non_continuation_caption(current_table_block, block)
+    ]
+    if merge_caption_blocks:
+        has_continuation_marker = any(
+            _is_continuation_caption(block) for block in merge_caption_blocks
+        )
 
         if not has_continuation_marker:
             return False
@@ -906,6 +976,7 @@ def merge_table(page_info_list):
         if current_state is None or previous_state is None:
             continue
 
+        post_table_caption_blocks = _get_post_table_caption_blocks(current_table_block)
         wait_merge_table_footnotes = [
             block for block in current_table_block["blocks"] if block["type"] == BlockType.TABLE_FOOTNOTE
         ]
@@ -918,6 +989,11 @@ def merge_table(page_info_list):
             current_state,
             previous_table_block,
             wait_merge_table_footnotes,
+        )
+        _restore_post_table_captions_as_text(
+            page_info,
+            current_table_block,
+            post_table_caption_blocks,
         )
 
         merged_away_blocks.add(id(current_table_block))
