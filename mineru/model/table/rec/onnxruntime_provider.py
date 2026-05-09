@@ -11,6 +11,9 @@ CUDA_PROVIDER = "CUDAExecutionProvider"
 CPU_PROVIDER_OPTS = {
     "arena_extend_strategy": "kSameAsRequested",
 }
+CUDA_PROVIDER_OPTS = {
+    "cudnn_conv_algo_search": "HEURISTIC",
+}
 
 
 def _normalize_device(device: object) -> str:
@@ -25,11 +28,16 @@ def _build_cpu_provider() -> Tuple[str, dict[str, Any]]:
     return (CPU_PROVIDER, dict(CPU_PROVIDER_OPTS))
 
 
+def _build_cuda_provider() -> Tuple[str, dict[str, Any]]:
+    return (CUDA_PROVIDER, dict(CUDA_PROVIDER_OPTS))
+
+
 def build_table_onnx_providers(
     available_providers: Sequence[str],
 ) -> List[Tuple[str, dict[str, Any]]]:
     """根据 MinerU 当前设备为表格 ONNX 模型选择 onnxruntime providers。"""
     cpu_provider = _build_cpu_provider()
+    cuda_provider = _build_cuda_provider()
     device = _normalize_device(get_device())
 
     # 只有 MinerU 设备明确为 CUDA 时才尝试 CUDAExecutionProvider，保持默认 CPU 行为。
@@ -37,6 +45,6 @@ def build_table_onnx_providers(
         return [cpu_provider]
 
     if CUDA_PROVIDER in available_providers:
-        return [(CUDA_PROVIDER, {}), cpu_provider]
+        return [cuda_provider, cpu_provider]
 
     return [cpu_provider]
