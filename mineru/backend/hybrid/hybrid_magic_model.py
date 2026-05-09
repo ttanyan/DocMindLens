@@ -8,7 +8,7 @@ from mineru.utils.boxbase import calculate_overlap_area_in_bbox1_area_ratio
 from mineru.utils.enum_class import ContentType, BlockType, NotExtractType
 from mineru.utils.guess_suffix_or_lang import guess_language_by_text
 from mineru.utils.span_block_fix import fix_text_block
-from mineru.utils.span_pre_proc import txt_spans_extract
+from mineru.utils.span_pre_proc import SpanBlockMatcher, txt_spans_extract
 from mineru.utils.visual_magic_model_utils import (
     GENERIC_CHILD_TYPES,
     IMAGE_BLOCK_BODY,
@@ -90,6 +90,7 @@ class MagicModel:
                     [virtual_block],
                     [],
                 )
+        span_matcher = SpanBlockMatcher(page_text_inline_formula_spans)
 
         # 解析每个块
         for index, block_info in enumerate(self.page_blocks):
@@ -285,20 +286,7 @@ class MagicModel:
                     block["cell_merge"] = block_info["cell_merge"]
                 _copy_raw_text_block_metadata(raw_block_type, block_info, block)
             else:
-                block_spans = []
-                for span in page_text_inline_formula_spans:
-                    if (
-                        calculate_overlap_area_in_bbox1_area_ratio(
-                            span["bbox"],
-                            block_bbox,
-                        )
-                        > 0.5
-                    ):
-                        block_spans.append(span)
-
-                if block_spans:
-                    for span in block_spans:
-                        page_text_inline_formula_spans.remove(span)
+                block_spans = span_matcher.collect_for_block(block_bbox)
 
                 block = {
                     "bbox": block_bbox,
