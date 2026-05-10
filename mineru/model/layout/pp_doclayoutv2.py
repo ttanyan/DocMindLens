@@ -1219,11 +1219,57 @@ class PPDocLayoutV2LayoutModel:
         return boxes
 
     @classmethod
+    def _relabel_header_footer_boundary_blocks(cls, boxes: List[Dict]) -> List[Dict]:
+        """按视觉坐标用页眉/页脚锚点修正边界区域的普通块标签。"""
+        if len(boxes) <= 1:
+            return boxes
+
+        header_labels = {"header", "header_image"}
+        footer_labels = {"footer", "footer_image"}
+        exempt_labels = {"aside_text", "footnote", "number"}
+        ordered_boxes = sorted(boxes, key=lambda box: box["index"])
+
+        header_anchor = max(
+            (box for box in ordered_boxes if box.get("label") in header_labels),
+            key=lambda box: (box["bbox"][3], box["index"]),
+            default=None,
+        )
+        footer_anchor = min(
+            (box for box in ordered_boxes if box.get("label") in footer_labels),
+            key=lambda box: (box["bbox"][1], box["index"]),
+            default=None,
+        )
+
+        # 先按最后一个页眉锚点的下边界修正，后续页脚修正可覆盖重叠区间。
+        if header_anchor is not None:
+            header_boundary = header_anchor["bbox"][3]
+            for box in ordered_boxes:
+                label = box.get("label")
+                if label in exempt_labels or label in header_labels:
+                    continue
+                if box["bbox"][3] <= header_boundary:
+                    box["label"] = "header"
+                    box["cls_id"] = 12
+
+        if footer_anchor is not None:
+            footer_boundary = footer_anchor["bbox"][1]
+            for box in ordered_boxes:
+                label = box.get("label")
+                if label in exempt_labels or label in footer_labels:
+                    continue
+                if box["bbox"][1] >= footer_boundary:
+                    box["label"] = "footer"
+                    box["cls_id"] = 8
+
+        return ordered_boxes
+
+    @classmethod
     def _apply_layout_post_process(cls, boxes: List[Dict]) -> List[Dict]:
         processed_boxes = [{**box, "bbox": list(box["bbox"])} for box in boxes]
         processed_boxes = cls._deduplicate_boxes_by_iou(processed_boxes, iou_threshold=0.9)
         processed_boxes = cls._merge_nested_formula_boxes(processed_boxes, overlap_threshold=0.7)
         processed_boxes = cls._relabel_formula_boxes(processed_boxes, overlap_threshold=0.7)
+        processed_boxes = cls._relabel_header_footer_boundary_blocks(processed_boxes)
         return cls._renumber_indices(processed_boxes)
 
     @classmethod
