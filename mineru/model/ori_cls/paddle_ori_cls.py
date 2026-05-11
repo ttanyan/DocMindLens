@@ -13,6 +13,12 @@ from mineru.utils.enum_class import ModelPath
 from mineru.utils.models_download_utils import auto_download_and_get_model_root_path
 
 
+# 旋转门控只统计极窄 OCR 框，避免普通中文单字框被当作旋转证据。
+ROTATED_TEXT_ASPECT_RATIO_THRESHOLD = 0.58
+ROTATED_TEXT_RATIO_THRESHOLD = 0.015
+ROTATED_TEXT_MIN_BOXES = 5
+
+
 class PaddleOrientationClsModel:
     def __init__(self, ocr_engine):
         self.sess = onnxruntime.InferenceSession(
@@ -82,26 +88,7 @@ class PaddleOrientationClsModel:
             det_res = self.ocr_engine.ocr(bgr_image, rec=False)[0]
             # Check if table is rotated by analyzing text box aspect ratios
             if det_res:
-                vertical_count = 0
-                is_rotated = False
-
-                for box_ocr_res in det_res:
-                    p1, p2, p3, p4 = box_ocr_res
-
-                    # Calculate width and height
-                    width = p3[0] - p1[0]
-                    height = p3[1] - p1[1]
-
-                    aspect_ratio = width / height if height > 0 else 1.0
-
-                    # Count vertical vs horizontal text boxes
-                    if aspect_ratio < 0.8:  # Taller than wide - vertical text
-                        vertical_count += 1
-                    # elif aspect_ratio > 1.2:  # Wider than tall - horizontal text
-                    #     horizontal_count += 1
-
-                if vertical_count >= len(det_res) * 0.28 and vertical_count >= 3:
-                    is_rotated = True
+                is_rotated = self._is_rotated_by_det_boxes(det_res)
                 # logger.debug(f"Text orientation analysis: vertical={vertical_count}, det_res={len(det_res)}, rotated={is_rotated}")
 
                 # If we have more vertical text boxes than horizontal ones,
@@ -122,6 +109,36 @@ class PaddleOrientationClsModel:
         if label in {"90", "270"}:
             return label
         return "270"
+
+    @staticmethod
+    def _count_rotated_text_boxes(det_boxes) -> int:
+        """统计极窄 OCR 框数量，普通中文单字框不应被算作旋转表格证据。"""
+        vertical_count = 0
+        for box_ocr_res in det_boxes:
+            p1, p2, p3, p4 = box_ocr_res
+
+            # 计算 OCR 框的宽高
+            width = p3[0] - p1[0]
+            height = p3[1] - p1[1]
+
+            aspect_ratio = width / height if height > 0 else 1.0
+
+            # 只统计足够极窄的竖向文字框
+            if aspect_ratio < ROTATED_TEXT_ASPECT_RATIO_THRESHOLD:
+                vertical_count += 1
+        return vertical_count
+
+    @classmethod
+    def _is_rotated_by_det_boxes(cls, det_boxes) -> bool:
+        """用极窄 OCR 框的数量和占比判断是否进入方向分类器。"""
+        if det_boxes is None or len(det_boxes) == 0:
+            return False
+
+        vertical_count = cls._count_rotated_text_boxes(det_boxes)
+        return (
+            vertical_count >= len(det_boxes) * ROTATED_TEXT_RATIO_THRESHOLD
+            and vertical_count >= ROTATED_TEXT_MIN_BOXES
+        )
 
     def list_2_batch(self, img_list, batch_size=16):
         """
@@ -232,21 +249,7 @@ class PaddleOrientationClsModel:
             for index, (img_info, (dt_boxes, elapse)) in enumerate(
                 zip(group_imgs, batch_results)
             ):
-                vertical_count = 0
-                for box_ocr_res in dt_boxes:
-                    p1, p2, p3, p4 = box_ocr_res
-
-                    # Calculate width and height
-                    width = p3[0] - p1[0]
-                    height = p3[1] - p1[1]
-
-                    aspect_ratio = width / height if height > 0 else 1.0
-
-                    # Count vertical text boxes
-                    if aspect_ratio < 0.8:  # Taller than wide - vertical text
-                        vertical_count += 1
-
-                if vertical_count >= len(dt_boxes) * 0.28 and vertical_count >= 3:
+                if self._is_rotated_by_det_boxes(dt_boxes):
                     rotated_imgs.append(img_info)
 
         # 对旋转的图片进行旋转角度预测
