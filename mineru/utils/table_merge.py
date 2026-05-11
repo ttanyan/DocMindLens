@@ -742,7 +742,7 @@ def _insert_cell_before_visual_column(rows, target_row_index: int, start_vcol: i
     target_vcol_map = build_visual_col_mapping(rows, target_row_index)
 
     for idx, target_start_vcol in enumerate(target_vcol_map):
-        if target_start_vcol > start_vcol:
+        if target_start_vcol >= start_vcol:
             target_cells[idx].insert_before(cell)
             return
 
@@ -775,6 +775,76 @@ def _carry_rowspan_structure_to_next_row(rows, row_idx: int) -> None:
 
     for start_vcol, carried_cell in sorted(carried_cells, key=lambda item: item[0], reverse=True):
         _insert_cell_before_visual_column(rows, next_row_idx, start_vcol, carried_cell)
+
+
+def _clip_overlapped_blank_rowspan_cells(
+    rows,
+    initial_occupied: dict[int, set[int]],
+) -> bool:
+    """裁剪被上页 rowspan 覆盖的当前页空白结构占位。
+
+    跨页表格中，上一页未结束的 rowspan 会通过 initial_occupied 占住
+    当前页开头的视觉列。如果当前页表格识别又生成了同位置的空白
+    rowspan 单元格，这个单元格只是结构占位；直接拼接会把同一视觉列
+    当成两列。这里仅裁剪无语义内容的空白占位，真实内容单元格不处理。
+    """
+    if not rows or not initial_occupied:
+        return False
+
+    cells_to_remove = []
+    cells_to_move = []
+
+    for row_idx, row in enumerate(rows):
+        cells = row.find_all(["td", "th"])
+        visual_col_map = build_visual_col_mapping(rows, row_idx)
+        for cell, start_vcol in zip(cells, visual_col_map):
+            rowspan = int(cell.get("rowspan", 1))
+            if rowspan <= 1 or _cell_has_semantic_content(cell):
+                continue
+
+            colspan = int(cell.get("colspan", 1))
+            occupied_cols = set(range(start_vcol, start_vcol + colspan))
+            if not occupied_cols:
+                continue
+
+            overlap_rows = 0
+            while overlap_rows < rowspan:
+                covered_cols = initial_occupied.get(row_idx + overlap_rows, set())
+                if not occupied_cols.issubset(covered_cols):
+                    break
+                overlap_rows += 1
+
+            if overlap_rows == 0:
+                continue
+
+            remaining_rowspan = rowspan - overlap_rows
+            target_row_idx = row_idx + overlap_rows
+            if remaining_rowspan > 0 and target_row_idx >= len(rows):
+                continue
+
+            cells_to_remove.append(cell)
+            if remaining_rowspan > 0:
+                moved_cell = deepcopy(cell)
+                if remaining_rowspan > 1:
+                    moved_cell["rowspan"] = str(remaining_rowspan)
+                else:
+                    moved_cell.attrs.pop("rowspan", None)
+                cells_to_move.append((target_row_idx, start_vcol, moved_cell))
+
+    if not cells_to_remove:
+        return False
+
+    for cell in cells_to_remove:
+        cell.extract()
+
+    for target_row_idx, start_vcol, moved_cell in sorted(
+        cells_to_move,
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    ):
+        _insert_cell_before_visual_column(rows, target_row_idx, start_vcol, moved_cell)
+
+    return True
 
 
 def _apply_cell_merge(
@@ -868,6 +938,11 @@ def perform_table_merge(
     rows2 = current_state.rows
 
     previous_adjusted = False
+
+    if header_count < len(rows2):
+        current_merge_rows = rows2[header_count:]
+        if _clip_overlapped_blank_rowspan_cells(current_merge_rows, previous_state.tail_occupied):
+            _refresh_table_state_metrics(current_state)
 
     if rows1 and rows2 and header_count < len(rows2):
         last_row1 = rows1[-1]
