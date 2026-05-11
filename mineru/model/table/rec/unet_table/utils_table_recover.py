@@ -289,6 +289,7 @@ def _split_text_by_cell_boundaries(
 
     cumulative_weights = np.cumsum(weights)
     split_indices = []
+    split_boundaries = []
     previous_idx = 0
     for left_box, right_box in zip(candidate_boxes, candidate_boxes[1:]):
         boundary_x = (float(left_box[2]) + float(right_box[0])) / 2
@@ -303,6 +304,7 @@ def _split_text_by_cell_boundaries(
         if split_idx <= previous_idx:
             return []
         split_indices.append(split_idx)
+        split_boundaries.append(min(max(boundary_x, float(ocr_box[0])), float(ocr_box[2])))
         previous_idx = split_idx
 
     segments = []
@@ -313,7 +315,32 @@ def _split_text_by_cell_boundaries(
             return []
         segments.append(segment)
         start = split_idx
+    split_positions = [float(ocr_box[0])] + split_boundaries + [float(ocr_box[2])]
+    for segment, left_x, right_x in zip(segments, split_positions, split_positions[1:]):
+        segment_weight = sum(_char_visual_weight(char) for char in segment)
+        expected_width = ocr_width * segment_weight / total_weight
+        # 检测框轻微越过单元格边界时也会被强制分到至少一个字符；这里要求切片的
+        # 实际投影宽度能支撑该片段的加权字符宽度，避免把 bbox padding 误当成跨格文本。
+        if right_x - left_x < expected_width * 0.6:
+            return []
     return segments
+
+
+def _min_projection_segment_width(text: str, ocr_box: np.ndarray) -> float:
+    """估算一个可拆文本片段的最小像素宽度，用于过滤 OCR 检测框的轻微越界。"""
+    stripped_text = text.strip()
+    ocr_width = float(ocr_box[2] - ocr_box[0])
+    if not stripped_text or ocr_width <= 0:
+        return float("inf")
+
+    weights = [_char_visual_weight(char) for char in stripped_text]
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return float("inf")
+
+    # 允许 OCR 框/字符宽度有一定误差，但相邻 cell 的投影宽度至少要接近一个最窄字符；
+    # 同时要求达到 OCR 框宽度的一小段比例，过滤长 OCR 框轻微擦到行标题 cell 的情况。
+    return max(ocr_width * min(weights) / total_weight * 0.7, ocr_width * 0.04)
 
 
 def _same_row_adjacent_cells(candidate_boxes: List[np.ndarray]) -> bool:
@@ -482,31 +509,30 @@ def match_ocr_cell(dt_rec_boxes: List[List[Union[Any, str]]], pred_bboxes: np.nd
         out=np.zeros_like(inter_height, dtype=np.float64),
         where=ocr_height > 0,
     )
-    projection_x_ratio = np.divide(
-        inter_width,
-        pred_width,
-        out=np.zeros_like(inter_width, dtype=np.float64),
-        where=pred_width > 0,
-    )
-    projection_mask = intersects & (projection_y_ratio >= 0.6) & (projection_x_ratio >= 0.25)
+    projection_mask = intersects & (projection_y_ratio >= 0.6) & (inter_width > 0)
 
     matched = {}
     not_match_orc_boxes = []
     for i, gt_box in enumerate(dt_rec_boxes):
-        matched_indices = np.flatnonzero(matched_mask[i])
-        if len(matched_indices) == 0:
-            projection_indices = np.flatnonzero(projection_mask[i])
+        projection_indices = np.flatnonzero(projection_mask[i])
+        if len(projection_indices) > 1:
+            min_segment_width = _min_projection_segment_width(str(gt_box[1]), ocr_boxes[i])
+            projection_indices = projection_indices[
+                inter_width[i][projection_indices] >= min_segment_width
+            ]
             split_results = _split_cross_cell_ocr_result(
                 gt_box,
                 ocr_boxes[i],
                 pred_boxes,
                 projection_indices,
-                allow_weighted_split=False,
             )
             if split_results:
                 for cell_idx, split_gt_box in split_results:
                     matched.setdefault(cell_idx, []).append(split_gt_box)
                 continue
+
+        matched_indices = np.flatnonzero(matched_mask[i])
+        if len(matched_indices) == 0:
             not_match_orc_boxes.append(gt_box)
             continue
 
