@@ -109,10 +109,19 @@ class PaddleOrientationClsModel:
                 if is_rotated:
                     x = self.preprocess(np_img)
                     (result,) = self.sess.run(None, {"x": x})
-                    rotate_label = self.labels[np.argmax(result)]
+                    rotate_label = self._normalize_rotated_label(
+                        self.labels[np.argmax(result)]
+                    )
                     # logger.debug(f"Orientation classification result: {label}")
 
         return rotate_label
+
+    @staticmethod
+    def _normalize_rotated_label(label: str) -> str:
+        """进入方向分类器已说明表格疑似旋转，0/180 等不可信结果统一按 270 兜底。"""
+        if label in {"90", "270"}:
+            return label
+        return "270"
 
     def list_2_batch(self, img_list, batch_size=16):
         """
@@ -248,7 +257,9 @@ class PaddleOrientationClsModel:
                     x = self.batch_preprocess(img_batch)
                     results = self.sess.run(None, {"x": x})
                     for img_info, res in zip(rotated_imgs, results[0]):
-                        label = self.labels[np.argmax(res)]
+                        label = self._normalize_rotated_label(
+                            self.labels[np.argmax(res)]
+                        )
                         self.img_rotate(img_info, label)
                         pbar.update(1)
 

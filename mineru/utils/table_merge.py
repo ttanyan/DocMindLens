@@ -397,8 +397,17 @@ def calculate_visual_columns(row):
     return len(cells)
 
 
-def _scan_row_visual_sources(rows, target_row_index: int) -> tuple[dict[int, tuple[int, int]], int]:
-    """扫描到目标行，记录每个视觉列当前由哪个源单元格占据。"""
+def _scan_row_visual_sources(
+    rows,
+    target_row_index: int,
+    initial_occupied: dict[int, set[int]] | None = None,
+) -> tuple[dict[int, tuple[int, int]], int]:
+    """扫描到目标行，记录每个视觉列当前由哪个源单元格占据。
+
+    initial_occupied 表示从上一页延续过来的 rowspan 占位，行号相对
+    rows[0] 计算。它只作为虚拟源单元格参与列定位，不对应当前页真实
+    <td>/<th> 元素。
+    """
     if target_row_index < 0:
         target_row_index += len(rows)
     if target_row_index < 0 or target_row_index >= len(rows):
@@ -407,6 +416,13 @@ def _scan_row_visual_sources(rows, target_row_index: int) -> tuple[dict[int, tup
     # occupied[row_idx][col_idx] = (source_row_idx, source_cell_idx)
     occupied: dict[int, dict[int, tuple[int, int]]] = {}
     total_cols = 0
+    for row_offset, cols in (initial_occupied or {}).items():
+        if not cols:
+            continue
+        occupied[row_offset] = {
+            col: (-1, col) for col in cols
+        }
+        total_cols = max(total_cols, max(cols) + 1)
 
     for r_idx in range(target_row_index + 1):
         occupied_row = occupied.setdefault(r_idx, {})
@@ -429,17 +445,26 @@ def _scan_row_visual_sources(rows, target_row_index: int) -> tuple[dict[int, tup
     return occupied.get(target_row_index, {}), total_cols
 
 
-def build_visual_col_mapping(rows, target_row_index: int) -> list[int]:
+def build_visual_col_mapping(
+    rows,
+    target_row_index: int,
+    initial_occupied: dict[int, set[int]] | None = None,
+) -> list[int]:
     """构建目标行中每个显式 <td>/<th> 元素到视觉列位置的映射。
 
     该映射会正确考虑从前序行继承而来的 rowspan 占位。
+    initial_occupied 可额外传入上一页延续到当前切片的 rowspan 占位。
     """
     if target_row_index < 0:
         target_row_index += len(rows)
     if target_row_index < 0 or target_row_index >= len(rows):
         return []
 
-    target_occupied, _ = _scan_row_visual_sources(rows, target_row_index)
+    target_occupied, _ = _scan_row_visual_sources(
+        rows,
+        target_row_index,
+        initial_occupied=initial_occupied,
+    )
 
     col_idx = 0
     mapping = []
@@ -742,7 +767,7 @@ def _insert_cell_before_visual_column(rows, target_row_index: int, start_vcol: i
     target_vcol_map = build_visual_col_mapping(rows, target_row_index)
 
     for idx, target_start_vcol in enumerate(target_vcol_map):
-        if target_start_vcol > start_vcol:
+        if target_start_vcol >= start_vcol:
             target_cells[idx].insert_before(cell)
             return
 
@@ -775,6 +800,76 @@ def _carry_rowspan_structure_to_next_row(rows, row_idx: int) -> None:
 
     for start_vcol, carried_cell in sorted(carried_cells, key=lambda item: item[0], reverse=True):
         _insert_cell_before_visual_column(rows, next_row_idx, start_vcol, carried_cell)
+
+
+def _clip_overlapped_blank_rowspan_cells(
+    rows,
+    initial_occupied: dict[int, set[int]],
+) -> bool:
+    """裁剪被上页 rowspan 覆盖的当前页空白结构占位。
+
+    跨页表格中，上一页未结束的 rowspan 会通过 initial_occupied 占住
+    当前页开头的视觉列。如果当前页表格识别又生成了同位置的空白
+    rowspan 单元格，这个单元格只是结构占位；直接拼接会把同一视觉列
+    当成两列。这里仅裁剪无语义内容的空白占位，真实内容单元格不处理。
+    """
+    if not rows or not initial_occupied:
+        return False
+
+    cells_to_remove = []
+    cells_to_move = []
+
+    for row_idx, row in enumerate(rows):
+        cells = row.find_all(["td", "th"])
+        visual_col_map = build_visual_col_mapping(rows, row_idx)
+        for cell, start_vcol in zip(cells, visual_col_map):
+            rowspan = int(cell.get("rowspan", 1))
+            if rowspan <= 1 or _cell_has_semantic_content(cell):
+                continue
+
+            colspan = int(cell.get("colspan", 1))
+            occupied_cols = set(range(start_vcol, start_vcol + colspan))
+            if not occupied_cols:
+                continue
+
+            overlap_rows = 0
+            while overlap_rows < rowspan:
+                covered_cols = initial_occupied.get(row_idx + overlap_rows, set())
+                if not occupied_cols.issubset(covered_cols):
+                    break
+                overlap_rows += 1
+
+            if overlap_rows == 0:
+                continue
+
+            remaining_rowspan = rowspan - overlap_rows
+            target_row_idx = row_idx + overlap_rows
+            if remaining_rowspan > 0 and target_row_idx >= len(rows):
+                continue
+
+            cells_to_remove.append(cell)
+            if remaining_rowspan > 0:
+                moved_cell = deepcopy(cell)
+                if remaining_rowspan > 1:
+                    moved_cell["rowspan"] = str(remaining_rowspan)
+                else:
+                    moved_cell.attrs.pop("rowspan", None)
+                cells_to_move.append((target_row_idx, start_vcol, moved_cell))
+
+    if not cells_to_remove:
+        return False
+
+    for cell in cells_to_remove:
+        cell.extract()
+
+    for target_row_idx, start_vcol, moved_cell in sorted(
+        cells_to_move,
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    ):
+        _insert_cell_before_visual_column(rows, target_row_idx, start_vcol, moved_cell)
+
+    return True
 
 
 def _apply_cell_merge(
@@ -810,7 +905,12 @@ def _apply_cell_merge(
     # 构建视觉列到单元格索引的映射
     last_row_idx = len(previous_state.rows) - 1
     vcol_map1 = build_visual_col_mapping(previous_state.rows, last_row_idx)
-    vcol_map2 = build_visual_col_mapping(rows2, header_count)
+    current_merge_rows = rows2[header_count:]
+    vcol_map2 = build_visual_col_mapping(
+        current_merge_rows,
+        0,
+        initial_occupied=previous_state.tail_occupied,
+    )
 
     # 构建视觉列 -> 单元格索引的反向映射（展开 colspan）
     vcol_to_cell1: dict[int, int] = {}
@@ -868,6 +968,11 @@ def perform_table_merge(
     rows2 = current_state.rows
 
     previous_adjusted = False
+
+    if header_count < len(rows2):
+        current_merge_rows = rows2[header_count:]
+        if _clip_overlapped_blank_rowspan_cells(current_merge_rows, previous_state.tail_occupied):
+            _refresh_table_state_metrics(current_state)
 
     if rows1 and rows2 and header_count < len(rows2):
         last_row1 = rows1[-1]
