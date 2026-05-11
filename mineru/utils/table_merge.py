@@ -187,6 +187,19 @@ def _find_table_body_block(table_block):
     return None
 
 
+def _build_post_body_child_index(table_block, offset: int) -> int | float | None:
+    """为跨页搬运到上一页表格的子块生成表体后的安全 index。"""
+    body_block = _find_table_body_block(table_block)
+    if body_block is None:
+        return None
+
+    body_index = body_block.get("index")
+    if not isinstance(body_index, (int, float)):
+        return None
+
+    return body_index + offset
+
+
 def _find_table_body_span(table_block):
     body_block = _find_table_body_block(table_block)
     if body_block and body_block["lines"] and body_block["lines"][0]["spans"]:
@@ -1044,9 +1057,14 @@ def perform_table_merge(
     previous_table_block["blocks"] = [
         block for block in previous_table_block["blocks"] if block["type"] != BlockType.TABLE_FOOTNOTE
     ]
-    for table_footnote in wait_merge_table_footnotes:
+    for footnote_offset, table_footnote in enumerate(wait_merge_table_footnotes, start=1):
         temp_table_footnote = table_footnote.copy()
         temp_table_footnote[SplitFlag.CROSS_PAGE] = True
+        post_body_index = _build_post_body_child_index(previous_table_block, footnote_offset)
+        if post_body_index is None:
+            temp_table_footnote.pop("index", None)
+        else:
+            temp_table_footnote["index"] = post_body_index
         previous_table_block["blocks"].append(temp_table_footnote)
 
     previous_state.dirty = True
