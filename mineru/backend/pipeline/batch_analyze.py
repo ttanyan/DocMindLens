@@ -31,6 +31,9 @@ MFR_BASE_BATCH_SIZE = 16
 OCR_DET_BASE_BATCH_SIZE = 8
 TABLE_ORI_CLS_BATCH_SIZE = 16
 TABLE_Wired_Wireless_CLS_BATCH_SIZE = 16
+TABLE_OCR_REC_SINGLE_CHAR_REPLACEMENTS = {
+    "香": "否",
+}
 
 
 class BatchAnalyze:
@@ -210,6 +213,13 @@ class BatchAnalyze:
                     break
 
         ocr_result[:] = sorted_result
+
+    @staticmethod
+    def _normalize_table_ocr_rec_text(text):
+        """规范化表格 OCR rec 的已知单字误识别，避免后续表格模型消费错误文本。"""
+        if not isinstance(text, str):
+            return text
+        return TABLE_OCR_REC_SINGLE_CHAR_REPLACEMENTS.get(text, text)
 
     @classmethod
     def _extract_table_inline_objects(
@@ -508,13 +518,15 @@ class BatchAnalyze:
                 ocr_res_list = ocr_engine.ocr(cropped_img_list, det=False, tqdm_enable=True, tqdm_desc=f"Table-ocr rec {_lang}")[0]
                 # 按照 table_id 将识别结果进行回填
                 for img_dict, ocr_res in zip(rec_img_list, ocr_res_list):
+                    ocr_text = self._normalize_table_ocr_rec_text(ocr_res[0])
+                    ocr_result_item = [img_dict["dt_box"], html.escape(ocr_text), ocr_res[1]]
                     if table_res_list_all_page[img_dict["table_id"]].get("ocr_result"):
                         table_res_list_all_page[img_dict["table_id"]]["ocr_result"].append(
-                            [img_dict["dt_box"], html.escape(ocr_res[0]), ocr_res[1]]
+                            ocr_result_item
                         )
                     else:
                         table_res_list_all_page[img_dict["table_id"]]["ocr_result"] = [
-                            [img_dict["dt_box"], html.escape(ocr_res[0]), ocr_res[1]]
+                            ocr_result_item
                         ]
 
             # 先对所有表格使用无线表格模型，然后对分类为有线的表格使用有线表格模型
