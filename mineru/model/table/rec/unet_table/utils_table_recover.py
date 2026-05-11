@@ -1,6 +1,6 @@
 # Copyright (c) Opendatalab. All rights reserved.
 import re
-from typing import Any, Dict, List, Union, Tuple
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import numpy as np
 
@@ -601,70 +601,300 @@ def gather_ocr_list_by_row(ocr_list: List[Any], threhold: float = 0.2) -> List[A
     return ocr_list
 
 
-def plot_html_table(
-    logi_points: Union[Union[np.ndarray, List]], cell_box_map: Dict[int, List[str]]
-) -> str:
-    # 初始化最大行数和列数
-    max_row = 0
-    max_col = 0
-    # 计算最大行数和列数
-    for point in logi_points:
-        max_row = max(max_row, point[1] + 1)  # 加1是因为结束下标是包含在内的
-        max_col = max(max_col, point[3] + 1)  # 加1是因为结束下标是包含在内的
+def _normalize_logic_points(logi_points: Union[np.ndarray, List]) -> np.ndarray:
+    """把逻辑坐标统一成 N x 4 数组，方便后续按结构网格渲染空 cell。"""
+    points = np.asarray(logi_points, dtype=np.int32)
+    if points.size == 0:
+        return np.empty((0, 4), dtype=np.int32)
+    return points.reshape(-1, 4)
 
-    # 创建一个二维数组来存储 sorted_logi_points 中的元素
-    grid = [[None] * max_col for _ in range(max_row)]
 
-    valid_start_row = (1 << 16) - 1
-    valid_start_col = (1 << 16) - 1
-    valid_end_col = 0
-    # 将 sorted_logi_points 中的元素填充到 grid 中
-    for i, logic_point in enumerate(logi_points):
-        row_start, row_end, col_start, col_end = (
-            logic_point[0],
-            logic_point[1],
-            logic_point[2],
-            logic_point[3],
+def _normalize_cell_text_map(cell_box_map: Dict[int, List[str]]) -> Dict[int, List[str]]:
+    """把 OCR 文本映射规整成 cell_index -> 文本列表，缺失的 cell 后续按空文本处理。"""
+    normalized = {}
+    for cell_idx, values in (cell_box_map or {}).items():
+        if values is None:
+            continue
+        if isinstance(values, str):
+            normalized[int(cell_idx)] = [values]
+            continue
+        try:
+            normalized[int(cell_idx)] = [
+                str(value) for value in values if value is not None
+            ]
+        except TypeError:
+            normalized[int(cell_idx)] = [str(values)]
+    return normalized
+
+
+def _normalize_cell_bboxes(
+    cell_bboxes: Optional[Union[np.ndarray, List]]
+) -> Optional[np.ndarray]:
+    """把单元格物理框统一成 N x 4 x 2，用于判断边缘空列是否是结构噪声。"""
+    if cell_bboxes is None:
+        return None
+    bboxes = np.asarray(cell_bboxes, dtype=np.float64)
+    if bboxes.size == 0:
+        return None
+    if bboxes.ndim == 3 and bboxes.shape[1:] == (4, 2):
+        return bboxes
+    if bboxes.ndim == 2 and bboxes.shape[1] == 8:
+        return bboxes.reshape(-1, 4, 2)
+    if bboxes.ndim == 2 and bboxes.shape[1] == 4:
+        x0, y0, x1, y1 = bboxes.T
+        return np.stack(
+            [
+                np.stack([x0, y0], axis=1),
+                np.stack([x1, y0], axis=1),
+                np.stack([x1, y1], axis=1),
+                np.stack([x0, y1], axis=1),
+            ],
+            axis=1,
         )
-        ocr_rec_text_list = cell_box_map.get(i)
-        if ocr_rec_text_list and "".join(ocr_rec_text_list):
-            valid_start_row = min(row_start, valid_start_row)
-            valid_start_col = min(col_start, valid_start_col)
-            valid_end_col = max(col_end, valid_end_col)
+    return None
+
+
+def _build_table_grid(logic_points: np.ndarray):
+    """按完整结构坐标填充网格，空文本 cell 也保留结构占位。"""
+    max_row = int(logic_points[:, 1].max() + 1)
+    max_col = int(logic_points[:, 3].max() + 1)
+    grid = [[None] * max_col for _ in range(max_row)]
+    for i, logic_point in enumerate(logic_points):
+        row_start, row_end, col_start, col_end = [int(v) for v in logic_point]
         for row in range(row_start, row_end + 1):
             for col in range(col_start, col_end + 1):
                 grid[row][col] = (i, row_start, row_end, col_start, col_end)
+    return grid, max_row, max_col
 
-    # 创建表格
-    table_html = "<html><body><table>"
 
-    # 遍历每行
-    for row in range(max_row):
-        if row < valid_start_row:
+def _cell_text(cell_text_map: Dict[int, List[str]], cell_idx: int) -> str:
+    """获取 cell 文本；没有 OCR 命中的结构 cell 返回空字符串。"""
+    return "".join(cell_text_map.get(cell_idx, []))
+
+
+def _cell_has_visible_text(cell_text_map: Dict[int, List[str]], cell_idx: int) -> bool:
+    """判断 cell 是否有可见文本，避免仅靠空白字符阻止边缘噪声裁剪。"""
+    return bool(_cell_text(cell_text_map, cell_idx).strip())
+
+
+def _cell_bbox_rect(cell_bboxes: Optional[np.ndarray], cell_idx: int):
+    """读取 cell 外接矩形，缺少物理框时返回 None 并退化为结构判断。"""
+    if cell_bboxes is None or cell_idx >= len(cell_bboxes):
+        return None
+    bbox = cell_bboxes[cell_idx]
+    return (
+        float(np.min(bbox[:, 0])),
+        float(np.min(bbox[:, 1])),
+        float(np.max(bbox[:, 0])),
+        float(np.max(bbox[:, 1])),
+    )
+
+
+def _estimate_axis_sizes(
+    logic_points: np.ndarray,
+    cell_bboxes: Optional[np.ndarray],
+    axis: str,
+    axis_count: int,
+) -> List[Optional[float]]:
+    """估算每行/列的几何尺寸，用来区分真实完整空列和异常外围噪声列。"""
+    if cell_bboxes is None:
+        return [None] * axis_count
+    axis_sizes = [[] for _ in range(axis_count)]
+    for cell_idx, logic_point in enumerate(logic_points):
+        rect = _cell_bbox_rect(cell_bboxes, cell_idx)
+        if rect is None:
             continue
-        temp = "<tr>"
-        # 遍历每一列
-        for col in range(max_col):
-            if col < valid_start_col or col > valid_end_col:
-                continue
-            if not grid[row][col]:
-                temp += "<td></td>"
-            else:
-                i, row_start, row_end, col_start, col_end = grid[row][col]
-                if not cell_box_map.get(i):
-                    continue
-                if row == row_start and col == col_start:
-                    ocr_rec_text = cell_box_map.get(i)
-                    # text = "<br>".join(ocr_rec_text)
-                    text = "".join(ocr_rec_text)
-                    # 如果是起始单元格
-                    row_span = row_end - row_start + 1
-                    col_span = col_end - col_start + 1
-                    cell_content = (
-                        f"<td rowspan={row_span} colspan={col_span}>{text}</td>"
-                    )
-                    temp += cell_content
+        row_start, row_end, col_start, col_end = [int(v) for v in logic_point]
+        x0, y0, x1, y1 = rect
+        if axis == "col":
+            span = max(col_end - col_start + 1, 1)
+            size = max((x1 - x0) / span, 0)
+            target_range = range(col_start, col_end + 1)
+        else:
+            span = max(row_end - row_start + 1, 1)
+            size = max((y1 - y0) / span, 0)
+            target_range = range(row_start, row_end + 1)
+        if size <= 0:
+            continue
+        for axis_idx in target_range:
+            if 0 <= axis_idx < axis_count:
+                axis_sizes[axis_idx].append(size)
+    return [
+        float(np.median(sizes)) if sizes else None
+        for sizes in axis_sizes
+    ]
 
+
+def _axis_reference_size(
+    axis_sizes: List[Optional[float]], axis_idx: int
+) -> Optional[float]:
+    """用其它行/列的中位尺寸作为参照，避免单个边缘噪声框主导判断。"""
+    sizes = [
+        size
+        for i, size in enumerate(axis_sizes)
+        if i != axis_idx and size is not None and size > 0
+    ]
+    if not sizes:
+        return None
+    return float(np.median(sizes))
+
+
+def _axis_size_is_abnormal(
+    axis_sizes: List[Optional[float]], axis_idx: int
+) -> bool:
+    """判断空边缘行/列尺寸是否明显异常；正常尺寸的完整空列需要保留。"""
+    axis_size = axis_sizes[axis_idx]
+    reference_size = _axis_reference_size(axis_sizes, axis_idx)
+    if axis_size is None or reference_size is None or reference_size <= 0:
+        return False
+    ratio = axis_size / reference_size
+    return ratio < 0.35 or ratio > 2.5
+
+
+def _edge_axis_has_text(
+    grid: List[List[Optional[Tuple[int, int, int, int, int]]]],
+    cell_text_map: Dict[int, List[str]],
+    axis: str,
+    axis_idx: int,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+) -> bool:
+    """检查当前边缘行/列是否有文本；有文本的边缘不能被裁剪。"""
+    if axis == "col":
+        positions = (grid[row][axis_idx] for row in range(row_start, row_end + 1))
+    else:
+        positions = (grid[axis_idx][col] for col in range(col_start, col_end + 1))
+    return any(
+        cell is not None and _cell_has_visible_text(cell_text_map, cell[0])
+        for cell in positions
+    )
+
+
+def _edge_axis_coverage(
+    grid: List[List[Optional[Tuple[int, int, int, int, int]]]],
+    axis: str,
+    axis_idx: int,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+) -> Tuple[int, int]:
+    """统计边缘行/列在当前保留范围内的结构覆盖度，覆盖不完整通常是外围噪声。"""
+    if axis == "col":
+        covered = sum(
+            grid[row][axis_idx] is not None
+            for row in range(row_start, row_end + 1)
+        )
+        total = row_end - row_start + 1
+    else:
+        covered = sum(
+            grid[axis_idx][col] is not None
+            for col in range(col_start, col_end + 1)
+        )
+        total = col_end - col_start + 1
+    return covered, total
+
+
+def _is_noise_edge_axis(
+    grid: List[List[Optional[Tuple[int, int, int, int, int]]]],
+    cell_text_map: Dict[int, List[str]],
+    axis_sizes: List[Optional[float]],
+    axis: str,
+    axis_idx: int,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+) -> bool:
+    """只裁剪无文本且结构不完整或尺寸异常的边缘，保留真实完整空行/空列。"""
+    if _edge_axis_has_text(
+        grid, cell_text_map, axis, axis_idx, row_start, row_end, col_start, col_end
+    ):
+        return False
+    covered, total = _edge_axis_coverage(
+        grid, axis, axis_idx, row_start, row_end, col_start, col_end
+    )
+    if covered == 0 or covered < total:
+        return True
+    return _axis_size_is_abnormal(axis_sizes, axis_idx)
+
+
+def _trim_noise_edges(
+    grid: List[List[Optional[Tuple[int, int, int, int, int]]]],
+    cell_text_map: Dict[int, List[str]],
+    row_sizes: List[Optional[float]],
+    col_sizes: List[Optional[float]],
+    max_row: int,
+    max_col: int,
+) -> Tuple[int, int, int, int]:
+    """裁剪外围噪声行列；完整覆盖且尺寸正常的空边缘会被当作真实表格结构保留。"""
+    row_start, row_end = 0, max_row - 1
+    col_start, col_end = 0, max_col - 1
+
+    while row_start <= row_end and _is_noise_edge_axis(
+        grid, cell_text_map, row_sizes, "row", row_start,
+        row_start, row_end, col_start, col_end,
+    ):
+        row_start += 1
+    while row_end >= row_start and _is_noise_edge_axis(
+        grid, cell_text_map, row_sizes, "row", row_end,
+        row_start, row_end, col_start, col_end,
+    ):
+        row_end -= 1
+    while col_start <= col_end and _is_noise_edge_axis(
+        grid, cell_text_map, col_sizes, "col", col_start,
+        row_start, row_end, col_start, col_end,
+    ):
+        col_start += 1
+    while col_end >= col_start and _is_noise_edge_axis(
+        grid, cell_text_map, col_sizes, "col", col_end,
+        row_start, row_end, col_start, col_end,
+    ):
+        col_end -= 1
+
+    return row_start, row_end, col_start, col_end
+
+
+def plot_html_table(
+    logi_points: Union[np.ndarray, List],
+    cell_box_map: Dict[int, List[str]],
+    cell_bboxes: Optional[Union[np.ndarray, List]] = None,
+) -> str:
+    logic_points = _normalize_logic_points(logi_points)
+    if logic_points.size == 0:
+        return "<html><body><table></table></body></html>"
+
+    cell_text_map = _normalize_cell_text_map(cell_box_map)
+    normalized_bboxes = _normalize_cell_bboxes(cell_bboxes)
+    grid, max_row, max_col = _build_table_grid(logic_points)
+    row_sizes = _estimate_axis_sizes(logic_points, normalized_bboxes, "row", max_row)
+    col_sizes = _estimate_axis_sizes(logic_points, normalized_bboxes, "col", max_col)
+    row_start, row_end, col_start, col_end = _trim_noise_edges(
+        grid, cell_text_map, row_sizes, col_sizes, max_row, max_col
+    )
+
+    table_html = "<html><body><table>"
+    if row_start > row_end or col_start > col_end:
+        return table_html + "</table></body></html>"
+
+    for row in range(row_start, row_end + 1):
+        temp = "<tr>"
+        for col in range(col_start, col_end + 1):
+            cell = grid[row][col]
+            if cell is None:
+                temp += "<td></td>"
+                continue
+
+            cell_idx, origin_row_start, origin_row_end, origin_col_start, origin_col_end = cell
+            clipped_row_start = max(origin_row_start, row_start)
+            clipped_col_start = max(origin_col_start, col_start)
+            if row == clipped_row_start and col == clipped_col_start:
+                row_span = min(origin_row_end, row_end) - clipped_row_start + 1
+                col_span = min(origin_col_end, col_end) - clipped_col_start + 1
+                text = _cell_text(cell_text_map, cell_idx)
+                temp += f"<td rowspan={row_span} colspan={col_span}>{text}</td>"
         table_html = table_html + temp + "</tr>"
 
     table_html += "</table></body></html>"
