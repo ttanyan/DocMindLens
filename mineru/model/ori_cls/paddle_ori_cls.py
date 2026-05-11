@@ -17,6 +17,10 @@ from mineru.utils.models_download_utils import auto_download_and_get_model_root_
 ROTATED_TEXT_ASPECT_RATIO_THRESHOLD = 0.58
 ROTATED_TEXT_RATIO_THRESHOLD = 0.015
 ROTATED_TEXT_MIN_BOXES = 5
+# 横向宽框占比足够高时认为是正常横向表格，直接豁免旋转检测。
+HORIZONTAL_TEXT_ASPECT_RATIO_THRESHOLD = 2.0
+HORIZONTAL_TEXT_REL_WIDTH_THRESHOLD = 0.06
+HORIZONTAL_TEXT_RATIO_THRESHOLD = 0.60
 
 
 class PaddleOrientationClsModel:
@@ -88,7 +92,7 @@ class PaddleOrientationClsModel:
             det_res = self.ocr_engine.ocr(bgr_image, rec=False)[0]
             # Check if table is rotated by analyzing text box aspect ratios
             if det_res:
-                is_rotated = self._is_rotated_by_det_boxes(det_res)
+                is_rotated = self._is_rotated_by_det_boxes(det_res, img_width)
                 # logger.debug(f"Text orientation analysis: vertical={vertical_count}, det_res={len(det_res)}, rotated={is_rotated}")
 
                 # If we have more vertical text boxes than horizontal ones,
@@ -129,9 +133,43 @@ class PaddleOrientationClsModel:
         return vertical_count
 
     @classmethod
-    def _is_rotated_by_det_boxes(cls, det_boxes) -> bool:
+    def _has_enough_horizontal_text_boxes(cls, det_boxes, image_width: int) -> bool:
+        """统计真实横向宽文本框占比，达标时豁免旋转检测。"""
+        if image_width <= 0:
+            return False
+
+        horizontal_count = 0
+        valid_box_count = 0
+        for box_ocr_res in det_boxes:
+            p1, p2, p3, p4 = box_ocr_res
+
+            # 计算 OCR 框宽高，并跳过无效框，避免污染占比分母。
+            width = p3[0] - p1[0]
+            height = p3[1] - p1[1]
+            if width <= 0 or height <= 0:
+                continue
+
+            valid_box_count += 1
+            aspect_ratio = width / height
+            rel_width = width / image_width
+            if (
+                aspect_ratio >= HORIZONTAL_TEXT_ASPECT_RATIO_THRESHOLD
+                and rel_width >= HORIZONTAL_TEXT_REL_WIDTH_THRESHOLD
+            ):
+                horizontal_count += 1
+
+        return (
+            valid_box_count > 0
+            and horizontal_count >= valid_box_count * HORIZONTAL_TEXT_RATIO_THRESHOLD
+        )
+
+    @classmethod
+    def _is_rotated_by_det_boxes(cls, det_boxes, image_width: int) -> bool:
         """用极窄 OCR 框的数量和占比判断是否进入方向分类器。"""
         if det_boxes is None or len(det_boxes) == 0:
+            return False
+
+        if cls._has_enough_horizontal_text_boxes(det_boxes, image_width):
             return False
 
         vertical_count = cls._count_rotated_text_boxes(det_boxes)
@@ -249,7 +287,8 @@ class PaddleOrientationClsModel:
             for index, (img_info, (dt_boxes, elapse)) in enumerate(
                 zip(group_imgs, batch_results)
             ):
-                if self._is_rotated_by_det_boxes(dt_boxes):
+                image_width = img_info["table_img_bgr"].shape[1]
+                if self._is_rotated_by_det_boxes(dt_boxes, image_width):
                     rotated_imgs.append(img_info)
 
         # 对旋转的图片进行旋转角度预测
