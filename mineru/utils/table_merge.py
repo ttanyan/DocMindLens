@@ -397,8 +397,17 @@ def calculate_visual_columns(row):
     return len(cells)
 
 
-def _scan_row_visual_sources(rows, target_row_index: int) -> tuple[dict[int, tuple[int, int]], int]:
-    """扫描到目标行，记录每个视觉列当前由哪个源单元格占据。"""
+def _scan_row_visual_sources(
+    rows,
+    target_row_index: int,
+    initial_occupied: dict[int, set[int]] | None = None,
+) -> tuple[dict[int, tuple[int, int]], int]:
+    """扫描到目标行，记录每个视觉列当前由哪个源单元格占据。
+
+    initial_occupied 表示从上一页延续过来的 rowspan 占位，行号相对
+    rows[0] 计算。它只作为虚拟源单元格参与列定位，不对应当前页真实
+    <td>/<th> 元素。
+    """
     if target_row_index < 0:
         target_row_index += len(rows)
     if target_row_index < 0 or target_row_index >= len(rows):
@@ -407,6 +416,13 @@ def _scan_row_visual_sources(rows, target_row_index: int) -> tuple[dict[int, tup
     # occupied[row_idx][col_idx] = (source_row_idx, source_cell_idx)
     occupied: dict[int, dict[int, tuple[int, int]]] = {}
     total_cols = 0
+    for row_offset, cols in (initial_occupied or {}).items():
+        if not cols:
+            continue
+        occupied[row_offset] = {
+            col: (-1, col) for col in cols
+        }
+        total_cols = max(total_cols, max(cols) + 1)
 
     for r_idx in range(target_row_index + 1):
         occupied_row = occupied.setdefault(r_idx, {})
@@ -429,17 +445,26 @@ def _scan_row_visual_sources(rows, target_row_index: int) -> tuple[dict[int, tup
     return occupied.get(target_row_index, {}), total_cols
 
 
-def build_visual_col_mapping(rows, target_row_index: int) -> list[int]:
+def build_visual_col_mapping(
+    rows,
+    target_row_index: int,
+    initial_occupied: dict[int, set[int]] | None = None,
+) -> list[int]:
     """构建目标行中每个显式 <td>/<th> 元素到视觉列位置的映射。
 
     该映射会正确考虑从前序行继承而来的 rowspan 占位。
+    initial_occupied 可额外传入上一页延续到当前切片的 rowspan 占位。
     """
     if target_row_index < 0:
         target_row_index += len(rows)
     if target_row_index < 0 or target_row_index >= len(rows):
         return []
 
-    target_occupied, _ = _scan_row_visual_sources(rows, target_row_index)
+    target_occupied, _ = _scan_row_visual_sources(
+        rows,
+        target_row_index,
+        initial_occupied=initial_occupied,
+    )
 
     col_idx = 0
     mapping = []
@@ -880,7 +905,12 @@ def _apply_cell_merge(
     # 构建视觉列到单元格索引的映射
     last_row_idx = len(previous_state.rows) - 1
     vcol_map1 = build_visual_col_mapping(previous_state.rows, last_row_idx)
-    vcol_map2 = build_visual_col_mapping(rows2, header_count)
+    current_merge_rows = rows2[header_count:]
+    vcol_map2 = build_visual_col_mapping(
+        current_merge_rows,
+        0,
+        initial_occupied=previous_state.tail_occupied,
+    )
 
     # 构建视觉列 -> 单元格索引的反向映射（展开 colspan）
     vcol_to_cell1: dict[int, int] = {}
