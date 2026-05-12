@@ -891,7 +891,7 @@ class PPDocLayoutV2LayoutModel:
         weight: str,
         device: Optional[str] = "cuda",
         imgsz: Tuple[int, int] = DEFAULT_IMAGE_SIZE,
-        conf: float = 0.5,
+        conf: float = 0.45,
         use_paddlex_filter_boxes: bool = True,
     ):
         self.device = device
