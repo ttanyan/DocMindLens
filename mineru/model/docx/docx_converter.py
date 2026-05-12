@@ -504,7 +504,7 @@ class DocxConverter:
         self._numbering_level_cache = {}
         # 读取文件字节，以便 mammoth 和 python-docx 各自使用独立读取流
         file_bytes = self._sanitize_missing_internal_relationships(file_stream.read())
-        # 使用完整文档 mammoth 转换预解析所有表格，获得完整上下文（编号/图片/样式等）
+        # 使用完整 DOCX 上下文预解析顶层表格，避免转换非表格正文带来的资源浪费
         self._mammoth_tables_html = self._preparse_tables_with_mammoth(file_bytes)
         self._mammoth_table_idx = 0
         self.docx_obj = Document(BytesIO(file_bytes))
@@ -665,15 +665,29 @@ class DocxConverter:
             else:
                 logger.debug(f"Ignoring element in DOCX with tag: {tag_name}")
 
+    @staticmethod
+    def _mammoth_top_level_table_document(document):
+        """只保留 DOCX 正文顶层表格节点，避免 Mammoth 转换非表格正文。"""
+        from mammoth import documents as _mammoth_documents
+
+        return document.copy(
+            children=[
+                child
+                for child in document.children
+                if isinstance(child, _mammoth_documents.Table)
+            ]
+        )
+
     def _preparse_tables_with_mammoth(self, file_bytes: bytes) -> list:
         """
-        使用 mammoth 完整文档转换预解析所有顶层表格的 HTML。
+        使用 mammoth 在完整 DOCX 上下文中预解析所有顶层表格的 HTML。
 
         孤立模式下（仅传入 <w:tbl> XML 片段），mammoth 缺少编号定义
         （word/numbering.xml）、样式（word/styles.xml）和关系
         （word/_rels/document.xml.rels）等上下文，在遇到含列表项或图片
-        的单元格时会抛出 AttributeError。通过完整文档转换，mammoth 可
-        获得完整上下文，从而正确处理这些情况。
+        的单元格时会抛出 AttributeError。这里让 mammoth 读取完整 DOCX
+        包上下文，但通过 transform_document 只转换顶层表格节点，避免把
+        非表格正文转换成巨大的 HTML 字符串。
 
         图片会被 mammoth 转换为内联 data-URI base64 格式（<img src="data:...">）。
 
@@ -688,7 +702,10 @@ class DocxConverter:
             import mammoth as _mammoth
             from bs4 import BeautifulSoup as _BeautifulSoup
 
-            result = _mammoth.convert_to_html(BytesIO(file_bytes))
+            result = _mammoth.convert_to_html(
+                BytesIO(file_bytes),
+                transform_document=self._mammoth_top_level_table_document,
+            )
             soup = _BeautifulSoup(result.value, 'html.parser')
 
             # 仅保留顶层表格，排除嵌套在其他表格单元格内的子表格
@@ -703,7 +720,7 @@ class DocxConverter:
             ]
 
             logger.debug(
-                f"Pre-parsed {len(top_level_tables)} top-level tables via full mammoth conversion"
+                f"Pre-parsed {len(top_level_tables)} top-level tables via filtered mammoth conversion"
             )
 
             # 将 XML 表格中的 OMML 公式注入到 mammoth HTML 表格中
@@ -716,7 +733,7 @@ class DocxConverter:
                 result_tables.append(str(html_table))
             return result_tables
         except Exception as e:
-            logger.debug(f"Could not pre-parse tables with full mammoth conversion: {e}")
+            logger.debug(f"Could not pre-parse tables with filtered mammoth conversion: {e}")
             return []
 
     def _inject_equations_into_table(self, html_table, xml_table):
