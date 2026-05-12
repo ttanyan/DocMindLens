@@ -7,6 +7,7 @@ from mineru.utils.boxbase import (
     calculate_overlap_area_in_bbox1_area_ratio,
 )
 from mineru.utils.enum_class import BlockType
+from mineru.utils.table_continuation import is_table_continuation_text
 
 
 IMAGE_BLOCK_BODY = "image_block_body"
@@ -126,6 +127,89 @@ def fallback_inline_caption_fragments(blocks, visual_main_types):
         block.pop("merge_prev", None)
 
     fallback_stacked_table_caption_fragments(blocks, visual_main_types)
+
+
+def fallback_leading_table_continuation_captions(blocks, visual_main_types):
+    """将页首紧贴表格的续表文本兜底为通用 caption。
+
+    该规则只处理页面有效块开头的 text，避免正文中出现“续表”时被误挂。
+    后续 regroup_visual_blocks() 会根据表格主体类型将通用 caption 落成
+    table_caption 子块。
+    """
+    table_main_types = get_table_main_types(visual_main_types)
+    if not table_main_types:
+        return
+
+    effective_blocks = [
+        block for block in sorted(blocks, key=lambda x: x["index"])
+        if block.get("type") not in VISUAL_RELATION_IGNORED_TYPES
+    ]
+    if len(effective_blocks) < 2:
+        return
+
+    leading_blocks = []
+    cursor = 0
+    while cursor < len(effective_blocks):
+        block = effective_blocks[cursor]
+        if not _is_leading_continuation_text_block(block):
+            break
+        leading_blocks.append(block)
+        cursor += 1
+
+    if not leading_blocks or cursor >= len(effective_blocks):
+        return
+
+    table_block = effective_blocks[cursor]
+    if table_block.get("type") not in table_main_types:
+        return
+
+    if not _is_leading_continuation_cluster_near_table(leading_blocks, table_block):
+        return
+
+    for block in leading_blocks:
+        block["type"] = BlockType.CAPTION
+        # fallback 后该块已是视觉 caption，不再参与正文跨块合并。
+        block.pop("merge_prev", None)
+
+
+def _is_leading_continuation_text_block(block):
+    """判断页首候选块是否是单行续表文本。"""
+    return (
+        block.get("type") in INLINE_CAPTION_FRAGMENT_TYPES
+        and is_single_line_caption_fragment(block)
+        and is_table_continuation_text(_block_text_content(block))
+    )
+
+
+def _block_text_content(block):
+    """提取视觉块中的可见文本，用于续表 marker 判断。"""
+    return "".join(
+        span.get("content", "")
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+    )
+
+
+def _is_leading_continuation_cluster_near_table(leading_blocks, table_block):
+    """判断页首续表文本簇是否与后续 table 在几何上相邻。"""
+    next_top = table_block["bbox"][1]
+    max_child_height = 1
+
+    for block in reversed(leading_blocks):
+        if not is_horizontally_near_table(block, table_block):
+            return False
+
+        block_height = max(block["bbox"][3] - block["bbox"][1], 1)
+        vertical_gap = next_top - block["bbox"][3]
+        max_gap = stacked_caption_max_gap(max(max_child_height, block_height))
+        max_overlap = max(2, block_height * 0.3)
+        if vertical_gap > max_gap or vertical_gap < -max_overlap:
+            return False
+
+        next_top = block["bbox"][1]
+        max_child_height = max(max_child_height, block_height)
+
+    return True
 
 
 def fallback_stacked_table_caption_fragments(blocks, visual_main_types):

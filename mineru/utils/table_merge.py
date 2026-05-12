@@ -8,22 +8,8 @@ from bs4 import BeautifulSoup
 from mineru.backend.vlm.vlm_middle_json_mkcontent import merge_para_with_text
 from mineru.utils.char_utils import full_to_half
 from mineru.utils.enum_class import BlockType, SplitFlag
+from mineru.utils.table_continuation import is_table_continuation_text
 
-
-CONTINUATION_END_MARKERS = [
-    "(续)",
-    "(续表)",
-    "(续上表)",
-    "(continued)",
-    "(cont.)",
-    "(cont’d)",
-    "(…continued)",
-    "续表",
-]
-
-CONTINUATION_INLINE_MARKERS = [
-    "(continued)",
-]
 
 MAX_HEADER_ROWS = 5
 
@@ -209,11 +195,7 @@ def _find_table_body_span(table_block):
 
 def _is_continuation_caption(caption_block) -> bool:
     """判断 caption 文本是否带有续表标记。"""
-    caption_text = full_to_half(merge_para_with_text(caption_block).strip()).lower()
-    return (
-        any(caption_text.endswith(marker.lower()) for marker in CONTINUATION_END_MARKERS)
-        or any(marker.lower() in caption_text for marker in CONTINUATION_INLINE_MARKERS)
-    )
+    return is_table_continuation_text(merge_para_with_text(caption_block))
 
 
 def _is_post_table_non_continuation_caption(table_block, caption_block) -> bool:
@@ -571,7 +553,10 @@ def _detect_table_headers_visual(
     for row_idx in range(min_rows):
         row1 = front_rows1[row_idx]
         row2 = front_rows2[row_idx]
-        if row1.normalized_texts == row2.normalized_texts and row1.effective_cols == row2.effective_cols:
+        # OCR 识别表头时可能丢失 colspan/rowspan，这里用渲染段数约束视觉一致性。
+        rendered_segments1 = calculate_row_rendered_segments(state1.rows, row_idx)
+        rendered_segments2 = calculate_row_rendered_segments(state2.rows, row_idx)
+        if row1.normalized_texts == row2.normalized_texts and rendered_segments1 == rendered_segments2:
             header_rows += 1
             header_texts.append(list(row1.display_texts))
         else:
