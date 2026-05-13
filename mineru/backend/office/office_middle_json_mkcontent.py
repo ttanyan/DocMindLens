@@ -336,8 +336,21 @@ def _replace_ascii_spaces_with_marker(content: str, marker: str) -> str:
     return ''.join(rendered_parts)
 
 
+def _render_text_with_edge_space_markers(content: str, marker: str) -> str:
+    """渲染非空文本：只把首尾 ASCII 空格转成 marker，中间普通空格保持原样。"""
+    leading_space_count = len(content) - len(content.lstrip(' '))
+    trailing_space_count = len(content) - len(content.rstrip(' '))
+    text_end = len(content) - trailing_space_count if trailing_space_count else len(content)
+    core_text = content[leading_space_count:text_end]
+    return (
+        marker * leading_space_count
+        + escape_conservative_markdown_text(core_text)
+        + marker * trailing_space_count
+    )
+
+
 def _render_visible_space_marker_text(content: str, style: list) -> str:
-    """渲染可见样式空格：普通空格替换为 marker，纯空格时忽略对应可见样式。"""
+    """渲染可见样式空格：纯空白用 marker，非空文本只处理边缘空格。"""
     marker = _get_visible_space_marker(style)
     if marker is None:
         return _apply_markdown_style(
@@ -345,14 +358,20 @@ def _render_visible_space_marker_text(content: str, style: list) -> str:
             style or [],
         )
 
-    rendered_content = _replace_ascii_spaces_with_marker(content, marker)
     style = style or []
+    if marker == '-' and not _is_ascii_space_only(content):
+        return _apply_markdown_style(
+            _render_text_with_edge_space_markers(content, marker),
+            style,
+        )
 
     if _is_ascii_space_only(content):
+        rendered_content = _replace_ascii_spaces_with_marker(content, marker)
         ignored_style = 'underline' if marker == '_' else 'strikethrough'
         style = [name for name in style if name != ignored_style]
         return _apply_markdown_style(rendered_content, style)
 
+    rendered_content = _render_text_with_edge_space_markers(content, marker)
     return _apply_markdown_style(rendered_content, style)
 
 

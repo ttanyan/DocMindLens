@@ -192,8 +192,8 @@ class DocxConverter:
     ) -> Optional[Formatting]:
         """按文本内容收敛 run 格式，避免空白 run 把不可见样式传给输出。
 
-        preserve_blank_non_visible_style 用于超链接内部 run 合并：空白 run 的
-        bold/italic 虽然自身不可见，但它可能表示同一链接 label 的连续样式边界。
+        preserve_blank_non_visible_style 用于保留同一文本片段内空白 run 的
+        bold/italic：这些样式自身不让空格可见，但可能是连续同样式文本的一部分。
         """
         if format_obj is None:
             return None
@@ -220,6 +220,61 @@ class DocxConverter:
                 return format_obj
             return None
         return format_obj
+
+    @classmethod
+    def _find_adjacent_non_blank_run_format(
+        cls,
+        inline_contents: list[Any],
+        current_index: int,
+        step: int,
+    ) -> Optional[Formatting]:
+        """查找相邻方向上最近的非空白普通 run 格式，用于判断空白 run 是否属于同一段样式文本。"""
+        index = current_index + step
+        while 0 <= index < len(inline_contents):
+            content = inline_contents[index]
+            # 超链接是独立输出边界，不跨越超链接借用样式上下文。
+            if isinstance(content, Hyperlink):
+                return None
+            if not isinstance(content, Run):
+                index += step
+                continue
+            if cls._is_hidden_run(content):
+                index += step
+                continue
+            text = content.text or ""
+            if text.strip():
+                return cls._get_format_from_run(content)
+            index += step
+        return None
+
+    @classmethod
+    def _should_preserve_blank_non_visible_style(
+        cls,
+        inline_contents: list[Any],
+        current_index: int,
+        text: str,
+        format_obj: Optional[Formatting],
+    ) -> bool:
+        """判断空白 run 的 bold/italic 是否应保留，以便连续同样式文本合并成一个 span。"""
+        if not text or text.strip():
+            return False
+        if not cls._has_non_visible_text_style(format_obj):
+            return False
+
+        previous_format = cls._find_adjacent_non_blank_run_format(
+            inline_contents,
+            current_index,
+            -1,
+        )
+        if format_obj == previous_format:
+            return True
+
+        next_format = cls._find_adjacent_non_blank_run_format(
+            inline_contents,
+            current_index,
+            1,
+        )
+        return format_obj == next_format
 
     @classmethod
     def _should_keep_group_text(
@@ -1555,7 +1610,7 @@ class DocxConverter:
         _field_acc_format = None  # 首个显示 run 的格式
 
         # 遍历段落的 runs 并按格式分组
-        for c in inner_contents:
+        for content_index, c in enumerate(inner_contents):
             if isinstance(c, Hyperlink):
                 # 若地址为 URL（含 ://），直接保留字符串，避免 Path 将 // 规范化为 /
                 address = c.address
@@ -1661,9 +1716,19 @@ class DocxConverter:
                     # 普通 run
                     text = c.text
                     hyperlink = None
+                    raw_format = self._get_format_from_run(c)
+                    preserve_blank_non_visible_style = (
+                        self._should_preserve_blank_non_visible_style(
+                            inner_contents,
+                            content_index,
+                            text,
+                            raw_format,
+                        )
+                    )
                     format = self._normalize_format_for_text(
-                        self._get_format_from_run(c),
+                        raw_format,
                         text,
+                        preserve_blank_non_visible_style=preserve_blank_non_visible_style,
                     )
             else:
                 continue
