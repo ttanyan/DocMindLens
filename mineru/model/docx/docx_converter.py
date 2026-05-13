@@ -2291,11 +2291,13 @@ class DocxConverter:
         if toc_level == 0:
             return 0
         stripped = text.strip()
-        match = re.match(r'^(\d+(?:\.\d+)*)', stripped)
+        match = re.match(r'^(\d+(?:\.\d+)+)(?![\d.])', stripped)
         if match:
-            parts = match.group(1).split('.')
-            # "1.1" -> 2 parts -> level 1; "1.1.1" -> 3 parts -> level 2
-            return len(parts) - 1
+            parts = match.group(1).split(".")
+            # 只用明确的多级章节号把异常偏深的 TOC 样式修浅，避免普通列表编号被提升层级。
+            text_level = len(parts) - 1
+            if text_level < toc_level:
+                return text_level
         return toc_level
 
     def _add_index_item(
@@ -2359,6 +2361,22 @@ class DocxConverter:
 
         # 情况 2: 增加缩进，打开子索引块
         elif self.pre_index_ilevel < ilevel:
+            if not self.index_block_stack:
+                # 防御异常 TOC 状态：栈为空时按新的目录块恢复，避免单个坏层级阻断解析。
+                logger.debug(
+                    "Recovering DOCX index stack before adding TOC item at level {}",
+                    ilevel,
+                )
+                self.pre_index_ilevel = -1
+                self._add_index_item(
+                    ilevel=ilevel,
+                    elements=elements,
+                    text=text,
+                    equations=equations,
+                    anchor=anchor,
+                )
+                return
+
             child_index_block = {
                 "type": BlockType.INDEX,
                 "content": [],
