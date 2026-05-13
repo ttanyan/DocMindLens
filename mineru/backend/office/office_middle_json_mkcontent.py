@@ -31,17 +31,19 @@ OFFICE_STYLE_RENDER_MODE_ENV = 'MINERU_OFFICE_STYLE_RENDER_MODE'
 OFFICE_STYLE_RENDER_MODE_HTML = 'html'
 OFFICE_STYLE_RENDER_MODE_MARKDOWN = 'markdown'
 OFFICE_MARKDOWN_WRAPPER_STYLES = {'bold', 'italic', 'strikethrough'}
+OFFICE_EMPHASIS_STYLE = 'text-emphasis: dot; text-emphasis-position: under;'
 
 
 def _apply_markdown_style(content: str, style: list) -> str:
     """
     按照字体样式列表对文本内容应用 Markdown 格式。
 
-    支持的样式：bold, italic, underline, strikethrough
+    支持的样式：bold, italic, underline, emphasis, strikethrough
     组合顺序（由内到外）：
       1. bold/italic（纯 Markdown，最内层，兼容性最广）
       2. strikethrough（~~，中间层，包裹纯 Markdown 符号广泛支持）
       3. underline（HTML <u>，最外层，作为 HTML 容器不干扰内部 Markdown 解析）
+      4. emphasis（HTML span，最外层，表达 Word 着重号语义）
 
     这样可避免 `**~~<u>text</u>~~**` 在部分渲染器中因 HTML 标签打断
     外层 Markdown 标记解析而导致样式失效的问题，
@@ -74,6 +76,10 @@ def _apply_markdown_style(content: str, style: list) -> str:
     if 'underline' in style:
         content = f'<u>{content}</u>'
 
+    # 第四层：emphasis —— markdown 无原生着重号语法，使用 CSS text-emphasis 表达。
+    if 'emphasis' in style:
+        content = f'<span style="{OFFICE_EMPHASIS_STYLE}">{content}</span>'
+
     return content
 
 
@@ -94,6 +100,9 @@ def _apply_html_style(content: str, style: list) -> str:
 
     if 'underline' in style:
         content = f'<u>{content}</u>'
+
+    if 'emphasis' in style:
+        content = f'<span style="{OFFICE_EMPHASIS_STYLE}">{content}</span>'
 
     return content
 
@@ -281,7 +290,135 @@ def _join_rendered_parts(parts: list[dict]) -> str:
     return para_text
 
 
+def _strip_text_block_markdown_edges(content: str) -> str:
+    """去掉 Markdown 文本块首尾普通空白，避免段首缩进被渲染成代码块。"""
+    if not content:
+        return content
+    return content.strip()
+
+
+def _get_visible_space_marker(style: list) -> str | None:
+    """根据可见空格样式选择 Markdown marker，下划线优先于删除线。"""
+    if not style:
+        return None
+    if 'underline' in style:
+        return '_'
+    if 'strikethrough' in style:
+        return '-'
+    return None
+
+
+def _is_ascii_space_only(content: str) -> bool:
+    """判断文本是否只由普通 ASCII 空格组成。"""
+    return bool(content) and all(char == ' ' for char in content)
+
+
+def _replace_ascii_spaces_with_marker(content: str, marker: str) -> str:
+    """将普通 ASCII 空格替换为指定 marker，其他文本继续做保守 Markdown 转义。"""
+    rendered_parts = []
+    text_buffer = []
+
+    def flush_text_buffer():
+        if text_buffer:
+            rendered_parts.append(
+                escape_conservative_markdown_text(''.join(text_buffer))
+            )
+            text_buffer.clear()
+
+    for char in content:
+        if char == ' ':
+            flush_text_buffer()
+            rendered_parts.append(marker)
+        else:
+            text_buffer.append(char)
+
+    flush_text_buffer()
+    return ''.join(rendered_parts)
+
+
+def _render_text_with_edge_space_markers(content: str, marker: str) -> str:
+    """渲染非空文本：只把首尾 ASCII 空格转成 marker，中间普通空格保持原样。"""
+    leading_space_count = len(content) - len(content.lstrip(' '))
+    trailing_space_count = len(content) - len(content.rstrip(' '))
+    text_end = len(content) - trailing_space_count if trailing_space_count else len(content)
+    core_text = content[leading_space_count:text_end]
+    return (
+        marker * leading_space_count
+        + escape_conservative_markdown_text(core_text)
+        + marker * trailing_space_count
+    )
+
+
+def _render_visible_space_marker_text(content: str, style: list) -> str:
+    """渲染可见样式空格：纯空白用 marker，非空文本只处理边缘空格。"""
+    marker = _get_visible_space_marker(style)
+    if marker is None:
+        return _apply_markdown_style(
+            escape_conservative_markdown_text(content),
+            style or [],
+        )
+
+    style = style or []
+    if marker == '-' and not _is_ascii_space_only(content):
+        return _apply_markdown_style(
+            _render_text_with_edge_space_markers(content, marker),
+            style,
+        )
+
+    if _is_ascii_space_only(content):
+        rendered_content = _replace_ascii_spaces_with_marker(content, marker)
+        ignored_style = 'underline' if marker == '_' else 'strikethrough'
+        style = [name for name in style if name != ignored_style]
+        return _apply_markdown_style(rendered_content, style)
+
+    rendered_content = _render_text_with_edge_space_markers(content, marker)
+    return _apply_markdown_style(rendered_content, style)
+
+
+def _has_visible_marker_markdown_wrapper(style: list) -> bool:
+    """判断可见空格 marker 渲染结果是否包含 Markdown 包裹符。"""
+    return _has_markdown_wrapper(style)
+
+
+def _render_styled_inline_text(content: str, style: list) -> str:
+    """渲染行内文本内容，统一复用可见空格 marker 规则。"""
+    if (
+        content
+        and _get_office_style_render_mode() == OFFICE_STYLE_RENDER_MODE_MARKDOWN
+        and _get_visible_space_marker(style)
+    ):
+        return _render_visible_space_marker_text(content, style)
+
+    escaped_content = _escape_office_markdown_text(content)
+    return _apply_configured_style(escaped_content, style)
+
+
+def _escape_standalone_marker_rule(content: str) -> str:
+    """独立一行全是 marker 时转义首个字符，避免被 Markdown 当作分隔线。"""
+    if content and all(char == '_' for char in content):
+        return f'\\{content}'
+    if content and all(char == '-' for char in content):
+        return f'\\{content}'
+    return content
+
+
 def _append_text_part(parts: list[dict], original_content: str, span_style: list):
+    if (
+        original_content
+        and _get_office_style_render_mode() == OFFICE_STYLE_RENDER_MODE_MARKDOWN
+        and _get_visible_space_marker(span_style)
+    ):
+        parts.append(
+            _make_rendered_part(
+                ContentType.TEXT,
+                _render_visible_space_marker_text(original_content, span_style),
+                raw_content=original_content,
+                style=span_style,
+                has_markdown_wrapper=_has_visible_marker_markdown_wrapper(span_style),
+            )
+        )
+        return
+
     escaped_content = _escape_office_markdown_text(original_content)
     content_stripped = escaped_content.strip()
     if content_stripped:
@@ -299,11 +436,9 @@ def _append_text_part(parts: list[dict], original_content: str, span_style: list
         )
     elif original_content:
         visible_styles = {'underline', 'strikethrough'}
+        rendered_content = original_content
         if span_style and any(s in visible_styles for s in span_style):
-            rendered_content = original_content.replace(" ", "&nbsp;")
             rendered_content = _apply_configured_style(rendered_content, span_style)
-        else:
-            rendered_content = original_content
         parts.append(
             _make_rendered_part(
                 ContentType.TEXT,
@@ -314,26 +449,48 @@ def _append_text_part(parts: list[dict], original_content: str, span_style: list
         )
 
 
+def _render_hyperlink_children_label(children: list[dict]) -> str:
+    """渲染 hyperlink 的子文本片段，保留各自样式后再组成同一个链接 label。"""
+    child_parts = []
+    for child in children or []:
+        if child.get('type') != ContentType.TEXT:
+            continue
+        _append_text_part(
+            child_parts,
+            child.get('content', ''),
+            child.get('style', []),
+        )
+    return _join_rendered_parts(child_parts).strip()
+
+
 def _append_hyperlink_part(
     parts: list[dict],
     original_content: str,
     span_style: list,
     url: str = '',
     plain_text_only: bool = False,
+    children: list[dict] | None = None,
 ):
-    link_text = _escape_office_markdown_text(original_content.strip())
-    if not link_text:
-        return
-
-    styled_text = _apply_configured_style(link_text, span_style)
-    if plain_text_only:
-        leading = original_content[:len(original_content) - len(original_content.lstrip())]
-        trailing = original_content[len(original_content.rstrip()):]
-        rendered_content = leading + styled_text + trailing
-        has_markdown_wrapper = _has_markdown_wrapper(span_style)
-    else:
-        rendered_content = _render_link(styled_text, url)
+    if children:
+        styled_text = _render_hyperlink_children_label(children)
+        if not styled_text:
+            return
+        rendered_content = styled_text if plain_text_only else _render_link(styled_text, url)
         has_markdown_wrapper = False
+    else:
+        stripped_content = original_content.strip()
+        if not stripped_content:
+            return
+
+        styled_text = _render_styled_inline_text(stripped_content, span_style)
+        if plain_text_only:
+            leading = original_content[:len(original_content) - len(original_content.lstrip())]
+            trailing = original_content[len(original_content.rstrip()):]
+            rendered_content = leading + styled_text + trailing
+            has_markdown_wrapper = _has_visible_marker_markdown_wrapper(span_style)
+        else:
+            rendered_content = _render_link(styled_text, url)
+            has_markdown_wrapper = False
 
     parts.append(
         _make_rendered_part(
@@ -396,12 +553,24 @@ def merge_para_with_text(para_block, escape_text_block_prefix=True):
                     span['content'],
                     span_style,
                     url=span.get('url', ''),
+                    children=span.get('children'),
                 )
 
     para_text = _join_rendered_parts(parts)
-    if escape_text_block_prefix and para_block.get('type') == BlockType.TEXT:
-        para_text = escape_text_block_markdown_prefix(para_text)
+    if para_block.get('type') == BlockType.TEXT:
+        para_text = _strip_text_block_markdown_edges(para_text)
+        para_text = _escape_standalone_marker_rule(para_text)
+        if escape_text_block_prefix:
+            para_text = escape_text_block_markdown_prefix(para_text)
     return para_text
+
+
+def _get_ordered_list_start(list_block):
+    """读取有序列表起始编号，兼容旧版数据缺少 start 字段的情况。"""
+    try:
+        return int(list_block.get('start', 1))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _flatten_list_items(list_block):
@@ -410,7 +579,7 @@ def _flatten_list_items(list_block):
     ilevel = list_block.get('ilevel', 0)
     attribute = list_block.get('attribute', 'unordered')
     indent = '    ' * ilevel
-    ordered_counter = 1
+    ordered_counter = _get_ordered_list_start(list_block)
 
     for block in list_block.get('blocks', []):
         if block['type'] in [BlockType.LIST, BlockType.INDEX]:
@@ -432,7 +601,7 @@ def _flatten_list_items_v2(list_block):
     items = []
     ilevel = list_block.get('ilevel', 0)
     attribute = list_block.get('attribute', 'unordered')
-    ordered_counter = 1
+    ordered_counter = _get_ordered_list_start(list_block)
 
     for block in list_block.get('blocks', []):
         if block['type'] in [BlockType.LIST, BlockType.INDEX]:
@@ -985,17 +1154,38 @@ def get_body_data(para_block):
     return get_data_from_spans(para_block.get('lines', []))
 
 
+def _span_has_content_for_v2(span: dict, visible_styles: set) -> bool:
+    """判断 V2 span 是否应保留，支持 hyperlink children 的可见空白样式。"""
+    content = span.get("content", '')
+    span_style = span.get('style', [])
+    if content.strip():
+        return True
+    if content and span_style and any(s in visible_styles for s in span_style):
+        return True
+    for child in span.get('children') or []:
+        child_content = child.get('content', '')
+        child_style = child.get('style', [])
+        if child_content.strip():
+            return True
+        if child_content and child_style and any(s in visible_styles for s in child_style):
+            return True
+    return False
+
+
 def merge_para_with_text_v2(para_block):
     _visible_styles = {'underline', 'strikethrough'}
     para_content = []
+    if para_block.get('type') == BlockType.TITLE:
+        section_number = para_block.get('section_number', '')
+        if section_number:
+            # v2 保持结构化 spans，同时补上 middle_json 已生成的自动标题编号。
+            para_content.append({
+                'type': ContentTypeV2.SPAN_TEXT,
+                'content': f'{section_number} ',
+            })
     for i, line in enumerate(para_block['lines']):
         for j, span in enumerate(line['spans']):
-            content = span.get("content", '')
-            span_style = span.get('style', [])
-            has_visible_style = bool(
-                span_style and any(s in _visible_styles for s in span_style)
-            )
-            if content.strip() or (content and has_visible_style):
+            if _span_has_content_for_v2(span, _visible_styles):
                 if span['type'] == ContentType.INLINE_EQUATION:
                     span['type'] = ContentTypeV2.SPAN_EQUATION_INLINE
                 para_content.append(span)
