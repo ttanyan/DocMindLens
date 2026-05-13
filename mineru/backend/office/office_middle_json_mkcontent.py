@@ -565,13 +565,21 @@ def merge_para_with_text(para_block, escape_text_block_prefix=True):
     return para_text
 
 
+def _get_ordered_list_start(list_block):
+    """读取有序列表起始编号，兼容旧版数据缺少 start 字段的情况。"""
+    try:
+        return int(list_block.get('start', 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _flatten_list_items(list_block):
     """Recursively flatten nested list blocks into a list of prefixed item strings."""
     items = []
     ilevel = list_block.get('ilevel', 0)
     attribute = list_block.get('attribute', 'unordered')
     indent = '    ' * ilevel
-    ordered_counter = 1
+    ordered_counter = _get_ordered_list_start(list_block)
 
     for block in list_block.get('blocks', []):
         if block['type'] in [BlockType.LIST, BlockType.INDEX]:
@@ -593,7 +601,7 @@ def _flatten_list_items_v2(list_block):
     items = []
     ilevel = list_block.get('ilevel', 0)
     attribute = list_block.get('attribute', 'unordered')
-    ordered_counter = 1
+    ordered_counter = _get_ordered_list_start(list_block)
 
     for block in list_block.get('blocks', []):
         if block['type'] in [BlockType.LIST, BlockType.INDEX]:

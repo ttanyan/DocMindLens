@@ -430,6 +430,8 @@ def parse_list_block(list_block: dict):
         "ilevel": list_block.get("ilevel", 0),
         "blocks": blocks
     }
+    if "start" in list_block:
+        result["start"] = list_block["start"]
 
     return result
 

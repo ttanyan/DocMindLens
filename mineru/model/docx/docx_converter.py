@@ -97,6 +97,7 @@ class DocxConverter:
         self._numbering_level_cache: dict[
             tuple[int, int], Optional[BaseOxmlElement]
         ] = {}
+        self._numbering_start_cache: dict[tuple[int, int], int] = {}
 
     @staticmethod
     def _escape_hyperlink_text(text: str) -> str:
@@ -790,6 +791,7 @@ class DocxConverter:
         self._numbering_root = None
         self._numbering_root_loaded = False
         self._numbering_level_cache = {}
+        self._numbering_start_cache = {}
         # 读取文件字节，以便 mammoth 和 python-docx 各自使用独立读取流
         file_bytes = self._sanitize_missing_internal_relationships(file_stream.read())
         # 使用完整 DOCX 上下文预解析顶层表格，避免转换非表格正文带来的资源浪费
@@ -802,6 +804,12 @@ class DocxConverter:
         self.pages.append(self.cur_page)
         self._walk_linear(self.docx_obj.element.body)
         self._add_header_footer(self.docx_obj)
+
+    def _close_active_list(self) -> None:
+        """关闭当前活跃列表块，但保留 Word numId 的连续编号计数。"""
+        self.pre_num_id = -1
+        self.pre_ilevel = -1
+        self.list_block_stack = []
 
     def _reset_index_state(self) -> None:
         """重置目录索引栈，避免相隔的多个目录块被错误合并。"""
@@ -899,10 +907,7 @@ class DocxConverter:
                 # 若不重置列表状态，后续列表项会被追加到表格之前创建的列表块中，
                 # 导致表格在 cur_page 中出现在那些列表项之后，产生顺序错乱。
                 if self.pre_num_id != -1:
-                    self.pre_num_id = -1
-                    self.pre_ilevel = -1
-                    self.list_block_stack = []
-                    self.list_counters = {}
+                    self._close_active_list()
                 try:
                     # 处理表格元素
                     self._handle_tables(element)
@@ -1315,10 +1320,7 @@ class DocxConverter:
         ):
             # 普通 TOC 是列表边界，避免后续同 numId 列表项继续合并到目录前的列表块。
             if self.pre_num_id != -1:
-                self.pre_num_id = -1
-                self.pre_ilevel = -1
-                self.list_block_stack = []
-                self.list_counters = {}
+                self._close_active_list()
             # 普通 TOC 段落被转换为 INDEX 后，也要保留段落末尾分节分页语义。
             if is_section_end:
                 self._start_new_page()
@@ -1348,10 +1350,7 @@ class DocxConverter:
                 # 该列表被用作章节标题（列表项间穿插了正文内容），直接转换为title block
                 # 先关闭任何活跃的普通列表
                 if self.pre_num_id != -1:
-                    self.pre_num_id = -1
-                    self.pre_ilevel = -1
-                    self.list_block_stack = []
-                    self.list_counters = {}
+                    self._close_active_list()
                 content_text = self._build_text_with_equations_and_hyperlinks(
                     paragraph_elements, text, equations
                 )
@@ -1382,10 +1381,7 @@ class DocxConverter:
             and p_style_id not in ["Title", "Heading"]
         ):  # 关闭列表
             # 重置列表状态
-            self.pre_num_id = -1
-            self.pre_ilevel = -1
-            self.list_block_stack = []
-            self.list_counters = {}
+            self._close_active_list()
 
         if p_style_id in ["Title"]:
             # 构建包含公式和超链接的文本
@@ -2148,6 +2144,20 @@ class DocxConverter:
 
         return None, None  # 如果段落不是列表的一部分
 
+    def _get_numbering_num_element(self, numId: int) -> Optional[BaseOxmlElement]:
+        """根据 numId 获取 word/numbering.xml 中的 num 定义。"""
+        numbering_root = self._get_numbering_root()
+        if numbering_root is None:
+            return None
+
+        namespaces = {
+            "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        }
+        return numbering_root.find(
+            f".//w:num[@w:numId='{numId}']",
+            namespaces=namespaces,
+        )
+
     def _get_abstract_numbering_element(
         self, numId: int
     ) -> Optional[BaseOxmlElement]:
@@ -2159,8 +2169,7 @@ class DocxConverter:
         if numbering_root is None:
             return None
 
-        num_xpath = f".//w:num[@w:numId='{numId}']"
-        num_element = numbering_root.find(num_xpath, namespaces=namespaces)
+        num_element = self._get_numbering_num_element(numId)
         if num_element is None:
             return None
 
@@ -2247,6 +2256,58 @@ class DocxConverter:
 
         self._numbering_level_cache[cache_key] = lvl_element
         return lvl_element
+
+    def _get_numbering_level_start(self, numId: int, ilvl: int) -> int:
+        """解析编号层级的起始值，优先使用 num/lvlOverride，其次使用 abstractNum/lvl/start。"""
+        cache_key = (numId, ilvl)
+        if cache_key in self._numbering_start_cache:
+            return self._numbering_start_cache[cache_key]
+
+        namespaces = {
+            "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        }
+        start = 1
+        num_element = self._get_numbering_num_element(numId)
+        if num_element is not None:
+            override = num_element.find(
+                f"w:lvlOverride[@w:ilvl='{ilvl}']",
+                namespaces=namespaces,
+            )
+            if override is not None:
+                start_override = override.find(
+                    "w:startOverride",
+                    namespaces=namespaces,
+                )
+                if start_override is not None:
+                    start = self._str_to_int(start_override.get(self.XML_KEY), start)
+                    self._numbering_start_cache[cache_key] = start
+                    return start
+
+        lvl_element = self._get_numbering_level_definition(numId, ilvl)
+        if lvl_element is not None:
+            start_element = lvl_element.find("w:start", namespaces=namespaces)
+            if start_element is not None:
+                start = self._str_to_int(start_element.get(self.XML_KEY), start)
+
+        self._numbering_start_cache[cache_key] = start
+        return start
+
+    def _advance_list_counter(self, numId: int, ilvl: int) -> int:
+        """推进 Word 编号计数，并返回当前列表项应显示的真实序号。"""
+        counter_key = (numId, ilvl)
+        if counter_key not in self.list_counters:
+            current_number = self._get_numbering_level_start(numId, ilvl)
+        else:
+            current_number = self.list_counters[counter_key] + 1
+        self.list_counters[counter_key] = current_number
+
+        # 父级编号前进后，子级编号应在下次出现时重新从定义的起始值开始。
+        for key in list(self.list_counters.keys()):
+            counter_num_id, counter_ilevel = key
+            if counter_num_id == numId and counter_ilevel > ilvl:
+                self.list_counters.pop(key, None)
+
+        return current_number
 
     def _is_numbered_list(self, numId: int, ilvl: int) -> bool:
         """
@@ -2344,17 +2405,15 @@ class DocxConverter:
 
         # 确定列表属性
         list_attribute = "ordered" if is_numbered else "unordered"
+        list_start = (
+            self._advance_list_counter(numid, ilevel) if is_numbered else None
+        )
 
         # 情况 1: 不存在上一个列表ID，或遇到了不同 numId 的新列表，创建新的顶层列表
         if self.pre_num_id == -1 or self.pre_num_id != numid:
             # 切换到不同的列表时，先重置旧列表状态
             if self.pre_num_id != -1:
-                self.pre_num_id = -1
-                self.pre_ilevel = -1
-                self.list_block_stack = []
-                self.list_counters = {}
-            # 为新编号序列重置计数器，确保编号从1开始
-            self._reset_list_counters_for_new_sequence(numid)
+                self._close_active_list()
 
             list_block = {
                 "type": BlockType.LIST,
@@ -2362,6 +2421,8 @@ class DocxConverter:
                 "content": [],
                 "ilevel": ilevel,
             }
+            if list_start is not None:
+                list_block["start"] = list_start
             self.cur_page.append(list_block)
             # 入栈, 记录当前的列表块
             self.list_block_stack.append(list_block)
@@ -2388,6 +2449,8 @@ class DocxConverter:
                 "content": [],
                 "ilevel": ilevel,
             }
+            if list_start is not None:
+                child_list_block["start"] = list_start
 
             if not self.list_block_stack:
                 logger.warning(
@@ -2445,6 +2508,8 @@ class DocxConverter:
                     "content": [],
                     "ilevel": ilevel,
                 }
+                if list_start is not None:
+                    list_block["start"] = list_start
                 self.cur_page.append(list_block)
                 self.list_block_stack.append(list_block)
             else:
@@ -2470,6 +2535,8 @@ class DocxConverter:
                     "content": [],
                     "ilevel": ilevel,
                 }
+                if list_start is not None:
+                    list_block["start"] = list_start
                 self.cur_page.append(list_block)
                 self.list_block_stack.append(list_block)
             else:
@@ -2566,17 +2633,6 @@ class DocxConverter:
             )
 
         return heading_numids
-
-    def _reset_list_counters_for_new_sequence(self, numid: int):
-        """
-        开始新的编号序列时重置计数器。
-
-        Args:
-            numid: 列表编号ID
-        """
-        keys_to_reset = [key for key in self.list_counters.keys() if key[0] == numid]
-        for key in keys_to_reset:
-            self.list_counters[key] = 0
 
     def _is_toc_sdt(self, element: BaseOxmlElement) -> bool:
         """
