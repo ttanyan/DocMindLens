@@ -31,17 +31,19 @@ OFFICE_STYLE_RENDER_MODE_ENV = 'MINERU_OFFICE_STYLE_RENDER_MODE'
 OFFICE_STYLE_RENDER_MODE_HTML = 'html'
 OFFICE_STYLE_RENDER_MODE_MARKDOWN = 'markdown'
 OFFICE_MARKDOWN_WRAPPER_STYLES = {'bold', 'italic', 'strikethrough'}
+OFFICE_EMPHASIS_STYLE = 'text-emphasis: dot; text-emphasis-position: under;'
 
 
 def _apply_markdown_style(content: str, style: list) -> str:
     """
     按照字体样式列表对文本内容应用 Markdown 格式。
 
-    支持的样式：bold, italic, underline, strikethrough
+    支持的样式：bold, italic, underline, emphasis, strikethrough
     组合顺序（由内到外）：
       1. bold/italic（纯 Markdown，最内层，兼容性最广）
       2. strikethrough（~~，中间层，包裹纯 Markdown 符号广泛支持）
       3. underline（HTML <u>，最外层，作为 HTML 容器不干扰内部 Markdown 解析）
+      4. emphasis（HTML span，最外层，表达 Word 着重号语义）
 
     这样可避免 `**~~<u>text</u>~~**` 在部分渲染器中因 HTML 标签打断
     外层 Markdown 标记解析而导致样式失效的问题，
@@ -74,6 +76,10 @@ def _apply_markdown_style(content: str, style: list) -> str:
     if 'underline' in style:
         content = f'<u>{content}</u>'
 
+    # 第四层：emphasis —— markdown 无原生着重号语法，使用 CSS text-emphasis 表达。
+    if 'emphasis' in style:
+        content = f'<span style="{OFFICE_EMPHASIS_STYLE}">{content}</span>'
+
     return content
 
 
@@ -94,6 +100,9 @@ def _apply_html_style(content: str, style: list) -> str:
 
     if 'underline' in style:
         content = f'<u>{content}</u>'
+
+    if 'emphasis' in style:
+        content = f'<span style="{OFFICE_EMPHASIS_STYLE}">{content}</span>'
 
     return content
 
@@ -408,11 +417,9 @@ def _append_text_part(parts: list[dict], original_content: str, span_style: list
         )
     elif original_content:
         visible_styles = {'underline', 'strikethrough'}
+        rendered_content = original_content
         if span_style and any(s in visible_styles for s in span_style):
-            rendered_content = original_content.replace(" ", "&nbsp;")
             rendered_content = _apply_configured_style(rendered_content, span_style)
-        else:
-            rendered_content = original_content
         parts.append(
             _make_rendered_part(
                 ContentType.TEXT,
@@ -423,26 +430,48 @@ def _append_text_part(parts: list[dict], original_content: str, span_style: list
         )
 
 
+def _render_hyperlink_children_label(children: list[dict]) -> str:
+    """渲染 hyperlink 的子文本片段，保留各自样式后再组成同一个链接 label。"""
+    child_parts = []
+    for child in children or []:
+        if child.get('type') != ContentType.TEXT:
+            continue
+        _append_text_part(
+            child_parts,
+            child.get('content', ''),
+            child.get('style', []),
+        )
+    return _join_rendered_parts(child_parts).strip()
+
+
 def _append_hyperlink_part(
     parts: list[dict],
     original_content: str,
     span_style: list,
     url: str = '',
     plain_text_only: bool = False,
+    children: list[dict] | None = None,
 ):
-    stripped_content = original_content.strip()
-    if not stripped_content:
-        return
-
-    styled_text = _render_styled_inline_text(stripped_content, span_style)
-    if plain_text_only:
-        leading = original_content[:len(original_content) - len(original_content.lstrip())]
-        trailing = original_content[len(original_content.rstrip()):]
-        rendered_content = leading + styled_text + trailing
-        has_markdown_wrapper = _has_visible_marker_markdown_wrapper(span_style)
-    else:
-        rendered_content = _render_link(styled_text, url)
+    if children:
+        styled_text = _render_hyperlink_children_label(children)
+        if not styled_text:
+            return
+        rendered_content = styled_text if plain_text_only else _render_link(styled_text, url)
         has_markdown_wrapper = False
+    else:
+        stripped_content = original_content.strip()
+        if not stripped_content:
+            return
+
+        styled_text = _render_styled_inline_text(stripped_content, span_style)
+        if plain_text_only:
+            leading = original_content[:len(original_content) - len(original_content.lstrip())]
+            trailing = original_content[len(original_content.rstrip()):]
+            rendered_content = leading + styled_text + trailing
+            has_markdown_wrapper = _has_visible_marker_markdown_wrapper(span_style)
+        else:
+            rendered_content = _render_link(styled_text, url)
+            has_markdown_wrapper = False
 
     parts.append(
         _make_rendered_part(
@@ -505,6 +534,7 @@ def merge_para_with_text(para_block, escape_text_block_prefix=True):
                     span['content'],
                     span_style,
                     url=span.get('url', ''),
+                    children=span.get('children'),
                 )
 
     para_text = _join_rendered_parts(parts)
@@ -1097,6 +1127,24 @@ def get_body_data(para_block):
     return get_data_from_spans(para_block.get('lines', []))
 
 
+def _span_has_content_for_v2(span: dict, visible_styles: set) -> bool:
+    """判断 V2 span 是否应保留，支持 hyperlink children 的可见空白样式。"""
+    content = span.get("content", '')
+    span_style = span.get('style', [])
+    if content.strip():
+        return True
+    if content and span_style and any(s in visible_styles for s in span_style):
+        return True
+    for child in span.get('children') or []:
+        child_content = child.get('content', '')
+        child_style = child.get('style', [])
+        if child_content.strip():
+            return True
+        if child_content and child_style and any(s in visible_styles for s in child_style):
+            return True
+    return False
+
+
 def merge_para_with_text_v2(para_block):
     _visible_styles = {'underline', 'strikethrough'}
     para_content = []
@@ -1110,12 +1158,7 @@ def merge_para_with_text_v2(para_block):
             })
     for i, line in enumerate(para_block['lines']):
         for j, span in enumerate(line['spans']):
-            content = span.get("content", '')
-            span_style = span.get('style', [])
-            has_visible_style = bool(
-                span_style and any(s in _visible_styles for s in span_style)
-            )
-            if content.strip() or (content and has_visible_style):
+            if _span_has_content_for_v2(span, _visible_styles):
                 if span['type'] == ContentType.INLINE_EQUATION:
                     span['type'] = ContentTypeV2.SPAN_EQUATION_INLINE
                 para_content.append(span)

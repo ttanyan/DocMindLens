@@ -152,6 +152,8 @@ class DocxConverter:
             styles.append('italic')
         if format_obj.underline:
             styles.append('underline')
+        if format_obj.emphasis:
+            styles.append('emphasis')
         if format_obj.strikethrough:
             styles.append('strikethrough')
         return ','.join(styles) if styles else None
@@ -171,7 +173,70 @@ class DocxConverter:
         """
         if format_obj is None:
             return False
-        return bool(format_obj.underline or format_obj.strikethrough)
+        return bool(format_obj.underline or format_obj.emphasis or format_obj.strikethrough)
+
+    @staticmethod
+    def _has_non_visible_text_style(format_obj) -> bool:
+        """判断格式是否只有空白文本不可见的字形样式。"""
+        if format_obj is None:
+            return False
+        return bool(format_obj.bold or format_obj.italic)
+
+    @classmethod
+    def _normalize_format_for_text(
+        cls,
+        format_obj: Optional[Formatting],
+        text: str,
+        *,
+        preserve_blank_non_visible_style: bool = False,
+    ) -> Optional[Formatting]:
+        """按文本内容收敛 run 格式，避免空白 run 把不可见样式传给输出。
+
+        preserve_blank_non_visible_style 用于超链接内部 run 合并：空白 run 的
+        bold/italic 虽然自身不可见，但它可能表示同一链接 label 的连续样式边界。
+        """
+        if format_obj is None:
+            return None
+        if text.strip():
+            return format_obj
+
+        updates = {}
+        if format_obj.underline_style == "words":
+            updates["underline"] = False
+            updates["underline_style"] = ""
+        if (
+            cls._has_non_visible_text_style(format_obj)
+            and not preserve_blank_non_visible_style
+        ):
+            updates["bold"] = False
+            updates["italic"] = False
+
+        if updates:
+            format_obj = format_obj.model_copy(update=updates)
+        if not cls._has_visible_style(format_obj):
+            if preserve_blank_non_visible_style and cls._has_non_visible_text_style(
+                format_obj
+            ):
+                return format_obj
+            return None
+        return format_obj
+
+    @classmethod
+    def _should_keep_group_text(
+        cls,
+        text: str,
+        format_obj: Optional[Formatting],
+        *,
+        preserve_plain_blank: bool = False,
+    ) -> bool:
+        """判断当前累积 run 是否需要输出，保留夹在可见样式之间的普通空白。"""
+        if not text:
+            return False
+        if text.strip():
+            return True
+        if cls._has_visible_style(format_obj):
+            return True
+        return preserve_plain_blank
 
     @staticmethod
     def _append_paragraph_element(
@@ -241,23 +306,111 @@ class DocxConverter:
         # 检查超链接是否有效（非空）
         if hyperlink is None:
             # 无超链接：只有有样式时才包裹 <text> 标签
-            if style_str:
-                return f'<text style="{style_str}">{text}</text>'
-            return text
+            return cls._format_text_tag(text, style_str)
 
         hyperlink_str = str(hyperlink)
         if not hyperlink_str or hyperlink_str.strip() == "" or hyperlink_str == ".":
-            if style_str:
-                return f'<text style="{style_str}">{text}</text>'
-            return text
+            return cls._format_text_tag(text, style_str)
 
         # 有超链接：构建 <text> 标签（含可选样式）
-        if style_str:
-            text_tag = f'<text style="{style_str}">{text}</text>'
-        else:
-            text_tag = f'<text>{text}</text>'
-
+        text_tag = cls._format_text_tag(text, style_str, force_tag=True)
         return f"<hyperlink>{text_tag}<url>{hyperlink_str}</url></hyperlink>"
+
+    @staticmethod
+    def _format_text_tag(
+        text: str,
+        style_str: Optional[str] = None,
+        *,
+        force_tag: bool = False,
+    ) -> str:
+        """生成内部富文本标记；无样式时普通文本不额外包裹。"""
+        if not text:
+            return text
+        if style_str:
+            return f'<text style="{style_str}">{text}</text>'
+        if force_tag:
+            return f"<text>{text}</text>"
+        return text
+
+    @staticmethod
+    def _is_valid_hyperlink_target(
+        hyperlink: Optional[Union[AnyUrl, Path, str]],
+    ) -> bool:
+        """判断 hyperlink 是否是可输出的真实链接目标。"""
+        if hyperlink is None:
+            return False
+        hyperlink_str = str(hyperlink)
+        return bool(hyperlink_str and hyperlink_str.strip() and hyperlink_str != ".")
+
+    @classmethod
+    def _format_hyperlink_group(
+        cls,
+        group: list[
+            tuple[str, Optional[Formatting], Optional[Union[AnyUrl, Path, str]]]
+        ],
+    ) -> str:
+        """将连续同 URL 的 hyperlink 片段输出为一个外层 hyperlink 标记。"""
+        if not group:
+            return ""
+        hyperlink = group[0][2]
+        if not cls._is_valid_hyperlink_target(hyperlink):
+            return "".join(
+                cls._format_text_tag(text, cls._get_style_str_from_format(format_obj))
+                for text, format_obj, _ in group
+                if text
+            )
+
+        text_tags = []
+        for text, format_obj, _ in group:
+            if not text:
+                continue
+            style_str = cls._get_style_str_from_format(format_obj)
+            text_tags.append(cls._format_text_tag(text, style_str, force_tag=True))
+        return f"<hyperlink>{''.join(text_tags)}<url>{hyperlink}</url></hyperlink>"
+
+    @classmethod
+    def _build_text_mappings_from_elements(
+        cls,
+        paragraph_elements: list[
+            tuple[str, Optional[Formatting], Optional[Union[AnyUrl, Path, str]]]
+        ],
+    ) -> list[tuple[str, str]]:
+        """按连续同 URL hyperlink 分组，生成原文到富文本标记的映射。"""
+        mappings = []
+        index = 0
+        while index < len(paragraph_elements):
+            text, format_obj, hyperlink = paragraph_elements[index]
+            if not text:
+                index += 1
+                continue
+
+            if cls._is_valid_hyperlink_target(hyperlink):
+                group = [(text, format_obj, hyperlink)]
+                index += 1
+                while index < len(paragraph_elements):
+                    next_text, next_format, next_hyperlink = paragraph_elements[index]
+                    if (
+                        not next_text
+                        or not cls._is_valid_hyperlink_target(next_hyperlink)
+                        or str(next_hyperlink) != str(hyperlink)
+                    ):
+                        break
+                    group.append((next_text, next_format, next_hyperlink))
+                    index += 1
+
+                original_text = "".join(item_text for item_text, _, _ in group)
+                mappings.append((original_text, cls._format_hyperlink_group(group)))
+                continue
+
+            style_str = cls._get_style_str_from_format(format_obj)
+            formatted_text = cls._format_text_with_hyperlink(
+                text,
+                hyperlink,
+                style_str,
+            )
+            mappings.append((text, formatted_text))
+            index += 1
+        return mappings
 
     def _build_text_from_elements(
         self,
@@ -274,12 +427,12 @@ class DocxConverter:
         Returns:
             str: 重组后的文本
         """
-        result_parts = []
-        for text, format_obj, hyperlink in paragraph_elements:
-            if text:
-                style_str = self._get_style_str_from_format(format_obj)
-                formatted_text = self._format_text_with_hyperlink(text, hyperlink, style_str)
-                result_parts.append(formatted_text)
+        result_parts = [
+            formatted_text
+            for _, formatted_text in self._build_text_mappings_from_elements(
+                paragraph_elements
+            )
+        ]
         return "".join(result_parts) if result_parts else ""
 
     @staticmethod
@@ -370,6 +523,56 @@ class DocxConverter:
 
         return result
 
+    @staticmethod
+    def _group_paragraph_elements_by_non_eq_segments(
+        paragraph_elements: list,
+        non_eq_segments: list,
+    ) -> list[list]:
+        """按公式切分出的非公式文本片段分组，避免 hyperlink 跨公式合并。"""
+        if len(non_eq_segments) <= 1:
+            return [paragraph_elements]
+
+        concat_elem_text = "".join(text for text, _, _ in paragraph_elements)
+        concat_seg_text = "".join(non_eq_segments)
+        if concat_elem_text != concat_seg_text:
+            return [paragraph_elements]
+
+        groups = []
+        current_group = []
+        current_len = 0
+        segment_index = 0
+
+        while segment_index < len(non_eq_segments) and non_eq_segments[segment_index] == "":
+            groups.append([])
+            segment_index += 1
+
+        for element in paragraph_elements:
+            text = element[0]
+            if segment_index >= len(non_eq_segments):
+                return [paragraph_elements]
+
+            current_group.append(element)
+            current_len += len(text)
+            target_len = len(non_eq_segments[segment_index])
+
+            if current_len == target_len:
+                groups.append(current_group)
+                current_group = []
+                current_len = 0
+                segment_index += 1
+                while (
+                    segment_index < len(non_eq_segments)
+                    and non_eq_segments[segment_index] == ""
+                ):
+                    groups.append([])
+                    segment_index += 1
+            elif current_len > target_len:
+                return [paragraph_elements]
+
+        if current_group:
+            groups.append(current_group)
+        return groups
+
     def _build_text_with_equations_and_hyperlinks(
         self,
         paragraph_elements: list[
@@ -401,7 +604,9 @@ class DocxConverter:
 
         # 检查是否有字体样式
         has_style = any(
-            fmt is not None and (fmt.bold or fmt.italic or fmt.underline or fmt.strikethrough)
+            fmt is not None and (
+                fmt.bold or fmt.italic or fmt.underline or fmt.emphasis or fmt.strikethrough
+            )
             for _, fmt, _ in paragraph_elements
         )
 
@@ -423,11 +628,13 @@ class DocxConverter:
 
         # 1. 记录每个元素的原始文本和对应的格式化结果
         element_mappings = []
-        for text, format_obj, hyperlink in paragraph_elements:
-            if text:
-                style_str = self._get_style_str_from_format(format_obj)
-                formatted_text = self._format_text_with_hyperlink(text, hyperlink, style_str)
-                element_mappings.append((text, formatted_text))
+        for segment_elements in self._group_paragraph_elements_by_non_eq_segments(
+            paragraph_elements,
+            non_eq_segments,
+        ):
+            element_mappings.extend(
+                self._build_text_mappings_from_elements(segment_elements)
+            )
 
         # 2. 在 text_with_equations 中定位每个元素的原始文本，然后替换为格式化后的文本
         result_text = text_with_equations
@@ -1360,8 +1567,9 @@ class DocxConverter:
                 # 按 run 粒度展开，避免只取首个 run 导致样式丢失。
                 if c.runs and len(c.runs) > 0:
                     # 先落盘当前累积的普通文本分组
-                    prev_has_visible = len(group_text.strip()) > 0 or (
-                        group_text and self._has_visible_style(previous_format)
+                    prev_has_visible = self._should_keep_group_text(
+                        group_text,
+                        previous_format,
                     )
                     if prev_has_visible:
                         paragraph_elements.append((group_text, previous_format, None))
@@ -1372,7 +1580,11 @@ class DocxConverter:
                         if self._is_hidden_run(h_run):
                             continue
                         h_text = h_run.text or ""
-                        h_format = self._get_format_from_run(h_run)
+                        h_format = self._normalize_format_for_text(
+                            self._get_format_from_run(h_run),
+                            h_text,
+                            preserve_blank_non_visible_style=True,
+                        )
                         # 保留非空文本（含制表符）以及带可见样式的空白 run
                         if h_text != "" or self._has_visible_style(h_format):
                             self._append_paragraph_element(
@@ -1449,18 +1661,43 @@ class DocxConverter:
                     # 普通 run
                     text = c.text
                     hyperlink = None
-                    format = self._get_format_from_run(c)
+                    format = self._normalize_format_for_text(
+                        self._get_format_from_run(c),
+                        text,
+                    )
             else:
                 continue
 
             # 当新 run 有可见内容（非空或带可见样式的空白）且格式变化时触发分组
             has_visible_content = len(text.strip()) > 0 or self._has_visible_style(format)
-            if (has_visible_content and format != previous_format) or (
+            is_blank_text = bool(text) and not text.strip()
+            format_changed = format != previous_format
+            has_visible_boundary = (
+                self._has_visible_style(previous_format)
+                or self._has_visible_style(format)
+            )
+            should_split_blank_boundary = (
+                is_blank_text
+                and bool(group_text)
+                and format_changed
+                and has_visible_boundary
+            )
+            if (has_visible_content and format_changed) or should_split_blank_boundary or (
                 hyperlink is not None
             ):
                 # 前一组有实质内容（非空或带可见样式的空白）时才保存
-                prev_has_visible = len(group_text.strip()) > 0 or (
-                    group_text and self._has_visible_style(previous_format)
+                preserve_plain_blank = (
+                    bool(group_text)
+                    and not group_text.strip()
+                    and (
+                        self._has_visible_style(previous_format)
+                        or self._has_visible_style(format)
+                    )
+                )
+                prev_has_visible = self._should_keep_group_text(
+                    group_text,
+                    previous_format,
+                    preserve_plain_blank=preserve_plain_blank,
                 )
                 if prev_has_visible:
                     paragraph_elements.append(
@@ -1480,8 +1717,9 @@ class DocxConverter:
         # 格式化最后一个组
         # 注意：使用 previous_format（当前累积组的格式），而非 format（最后一次循环迭代的格式）。
         # 最后一次迭代可能是无样式的空 run，若使用 format 会导致样式丢失。
-        last_has_visible = len(group_text.strip()) > 0 or (
-            group_text and self._has_visible_style(previous_format)
+        last_has_visible = self._should_keep_group_text(
+            group_text,
+            previous_format,
         )
         if last_has_visible:
             paragraph_elements.append((group_text, previous_format, None))
@@ -1593,6 +1831,18 @@ class DocxConverter:
 
         return False
 
+    @staticmethod
+    def _get_direct_underline_style(run: Run) -> str:
+        """读取 run 级下划线类型，用于区分 words 这类不作用于空格的下划线。"""
+        _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        rPr = run._element.find(f"{{{_W}}}rPr")
+        if rPr is None:
+            return ""
+        underline = rPr.find(f"{{{_W}}}u")
+        if underline is None:
+            return ""
+        return underline.get(f"{{{_W}}}val", "single")
+
     @classmethod
     def _get_format_from_run(cls, run: Run) -> Optional[Formatting]:
         """
@@ -1608,8 +1858,10 @@ class DocxConverter:
         is_italic = cls._resolve_run_bool_with_inheritance(run, "italic")
         is_strikethrough = cls._resolve_run_bool_with_inheritance(run, "strikethrough")
         is_underline = cls._resolve_run_bool_with_inheritance(run, "underline")
+        underline_style = cls._get_direct_underline_style(run)
 
-        # 检测着重符号 (w:em)：若存在非 none 的 em 值，则视为下划线样式
+        # 检测着重符号 (w:em)：独立保留为 emphasis，避免和真实下划线混淆。
+        is_emphasis = False
         _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         rPr = run._element.find(f'{{{_W}}}rPr')
         if rPr is not None:
@@ -1617,7 +1869,7 @@ class DocxConverter:
             if em is not None:
                 em_val = em.get(f'{{{_W}}}val', '')
                 if em_val and em_val != 'none':
-                    is_underline = True
+                    is_emphasis = True
 
         is_sub = run.font.subscript or False
         is_sup = run.font.superscript or False
@@ -1627,6 +1879,8 @@ class DocxConverter:
             bold=is_bold,
             italic=is_italic,
             underline=is_underline,
+            underline_style=underline_style,
+            emphasis=is_emphasis,
             strikethrough=is_strikethrough,
             script=script,
         )
