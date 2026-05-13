@@ -281,6 +281,13 @@ def _join_rendered_parts(parts: list[dict]) -> str:
     return para_text
 
 
+def _strip_text_block_markdown_edges(content: str) -> str:
+    """去掉 Markdown 文本块首尾普通空白，避免段首缩进被渲染成代码块。"""
+    if not content:
+        return content
+    return content.strip()
+
+
 def _append_text_part(parts: list[dict], original_content: str, span_style: list):
     escaped_content = _escape_office_markdown_text(original_content)
     content_stripped = escaped_content.strip()
@@ -399,8 +406,10 @@ def merge_para_with_text(para_block, escape_text_block_prefix=True):
                 )
 
     para_text = _join_rendered_parts(parts)
-    if escape_text_block_prefix and para_block.get('type') == BlockType.TEXT:
-        para_text = escape_text_block_markdown_prefix(para_text)
+    if para_block.get('type') == BlockType.TEXT:
+        para_text = _strip_text_block_markdown_edges(para_text)
+        if escape_text_block_prefix:
+            para_text = escape_text_block_markdown_prefix(para_text)
     return para_text
 
 
