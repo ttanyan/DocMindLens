@@ -487,8 +487,8 @@ def replace_image_with_base64(markdown_text, image_dir_path):
 
 
 def _escape_latex_html_chars_for_gradio(content):
-    """转义公式内部会被 Gradio HTML 解析链路误判的字符。"""
-    return content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    """转义公式内部会被 Gradio HTML 解析链路误判的尖括号，保留 LaTeX 对齐用 &。"""
+    return content.replace("<", "&lt;").replace(">", "&gt;")
 
 
 def escape_latex_blocks_for_gradio_preview(markdown_text, latex_delimiters):
