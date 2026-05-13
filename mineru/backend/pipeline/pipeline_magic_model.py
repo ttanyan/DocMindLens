@@ -12,6 +12,7 @@ from mineru.utils.span_block_fix import merge_spans_to_vertical_line, vertical_l
 from mineru.utils.span_pre_proc import SpanBlockMatcher, txt_spans_extract
 from mineru.utils.visual_magic_model_utils import (
     fallback_inline_caption_fragments,
+    fallback_leading_table_continuation_captions,
     find_best_visual_parent,
 )
 
@@ -121,6 +122,7 @@ class MagicModel:
         self.page_blocks.sort(key=lambda x: x["index"])
         self.__build_page_blocks()
         fallback_inline_caption_fragments(self.page_blocks, self.VISUAL_MAIN_TYPES)
+        fallback_leading_table_continuation_captions(self.page_blocks, self.VISUAL_MAIN_TYPES)
         self.__classify_visual_blocks()
         self.__build_return_blocks()
 

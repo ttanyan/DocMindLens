@@ -13,6 +13,7 @@ from mineru.utils.visual_magic_model_utils import (
     clean_content,
     code_content_clean,
     fallback_inline_caption_fragments,
+    fallback_leading_table_continuation_captions,
     isolated_formula_clean,
     regroup_visual_blocks,
 )
@@ -230,6 +231,7 @@ class MagicModel:
             blocks.append(block)
 
         fallback_inline_caption_fragments(blocks, VISUAL_MAIN_TYPES)
+        fallback_leading_table_continuation_captions(blocks, VISUAL_MAIN_TYPES)
 
         self.image_blocks = []
         self.table_blocks = []
