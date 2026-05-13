@@ -174,6 +174,32 @@ class DocxConverter:
         return bool(format_obj.underline or format_obj.strikethrough)
 
     @staticmethod
+    def _append_paragraph_element(
+        paragraph_elements: list[
+            tuple[str, Optional[Formatting], Optional[Union[AnyUrl, Path, str]]]
+        ],
+        text: str,
+        format_obj: Optional[Formatting],
+        hyperlink: Optional[Union[AnyUrl, Path, str]],
+    ) -> None:
+        """追加段落元素；相邻同超链接且同格式的 run 合并为一个元素。"""
+        if (
+            hyperlink is not None
+            and paragraph_elements
+            and paragraph_elements[-1][2] is not None
+            and str(paragraph_elements[-1][2]) == str(hyperlink)
+            and paragraph_elements[-1][1] == format_obj
+        ):
+            previous_text, previous_format, previous_hyperlink = paragraph_elements[-1]
+            paragraph_elements[-1] = (
+                f"{previous_text}{text}",
+                previous_format,
+                previous_hyperlink,
+            )
+            return
+        paragraph_elements.append((text, format_obj, hyperlink))
+
+    @staticmethod
     def _is_hidden_run(run: Run) -> bool:
         """Check whether a run is marked as hidden text in Word."""
         _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -1349,7 +1375,12 @@ class DocxConverter:
                         h_format = self._get_format_from_run(h_run)
                         # 保留非空文本（含制表符）以及带可见样式的空白 run
                         if h_text != "" or self._has_visible_style(h_format):
-                            paragraph_elements.append((h_text, h_format, hyperlink))
+                            self._append_paragraph_element(
+                                paragraph_elements,
+                                h_text,
+                                h_format,
+                                hyperlink,
+                            )
                     # 保持 previous_format 为最近的普通文本格式，不跨越超链接合并
                     continue
                 else:

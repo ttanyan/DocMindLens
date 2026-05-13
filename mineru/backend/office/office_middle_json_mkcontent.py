@@ -288,7 +288,109 @@ def _strip_text_block_markdown_edges(content: str) -> str:
     return content.strip()
 
 
+def _get_visible_space_marker(style: list) -> str | None:
+    """根据可见空格样式选择 Markdown marker，下划线优先于删除线。"""
+    if not style:
+        return None
+    if 'underline' in style:
+        return '_'
+    if 'strikethrough' in style:
+        return '-'
+    return None
+
+
+def _is_ascii_space_only(content: str) -> bool:
+    """判断文本是否只由普通 ASCII 空格组成。"""
+    return bool(content) and all(char == ' ' for char in content)
+
+
+def _replace_ascii_spaces_with_marker(content: str, marker: str) -> str:
+    """将普通 ASCII 空格替换为指定 marker，其他文本继续做保守 Markdown 转义。"""
+    rendered_parts = []
+    text_buffer = []
+
+    def flush_text_buffer():
+        if text_buffer:
+            rendered_parts.append(
+                escape_conservative_markdown_text(''.join(text_buffer))
+            )
+            text_buffer.clear()
+
+    for char in content:
+        if char == ' ':
+            flush_text_buffer()
+            rendered_parts.append(marker)
+        else:
+            text_buffer.append(char)
+
+    flush_text_buffer()
+    return ''.join(rendered_parts)
+
+
+def _render_visible_space_marker_text(content: str, style: list) -> str:
+    """渲染可见样式空格：普通空格替换为 marker，纯空格时忽略对应可见样式。"""
+    marker = _get_visible_space_marker(style)
+    if marker is None:
+        return _apply_markdown_style(
+            escape_conservative_markdown_text(content),
+            style or [],
+        )
+
+    rendered_content = _replace_ascii_spaces_with_marker(content, marker)
+    style = style or []
+
+    if _is_ascii_space_only(content):
+        ignored_style = 'underline' if marker == '_' else 'strikethrough'
+        style = [name for name in style if name != ignored_style]
+        return _apply_markdown_style(rendered_content, style)
+
+    return _apply_markdown_style(rendered_content, style)
+
+
+def _has_visible_marker_markdown_wrapper(style: list) -> bool:
+    """判断可见空格 marker 渲染结果是否包含 Markdown 包裹符。"""
+    return _has_markdown_wrapper(style)
+
+
+def _render_styled_inline_text(content: str, style: list) -> str:
+    """渲染行内文本内容，统一复用可见空格 marker 规则。"""
+    if (
+        content
+        and _get_office_style_render_mode() == OFFICE_STYLE_RENDER_MODE_MARKDOWN
+        and _get_visible_space_marker(style)
+    ):
+        return _render_visible_space_marker_text(content, style)
+
+    escaped_content = _escape_office_markdown_text(content)
+    return _apply_configured_style(escaped_content, style)
+
+
+def _escape_standalone_marker_rule(content: str) -> str:
+    """独立一行全是 marker 时转义首个字符，避免被 Markdown 当作分隔线。"""
+    if content and all(char == '_' for char in content):
+        return f'\\{content}'
+    if content and all(char == '-' for char in content):
+        return f'\\{content}'
+    return content
+
+
 def _append_text_part(parts: list[dict], original_content: str, span_style: list):
+    if (
+        original_content
+        and _get_office_style_render_mode() == OFFICE_STYLE_RENDER_MODE_MARKDOWN
+        and _get_visible_space_marker(span_style)
+    ):
+        parts.append(
+            _make_rendered_part(
+                ContentType.TEXT,
+                _render_visible_space_marker_text(original_content, span_style),
+                raw_content=original_content,
+                style=span_style,
+                has_markdown_wrapper=_has_visible_marker_markdown_wrapper(span_style),
+            )
+        )
+        return
+
     escaped_content = _escape_office_markdown_text(original_content)
     content_stripped = escaped_content.strip()
     if content_stripped:
@@ -328,16 +430,16 @@ def _append_hyperlink_part(
     url: str = '',
     plain_text_only: bool = False,
 ):
-    link_text = _escape_office_markdown_text(original_content.strip())
-    if not link_text:
+    stripped_content = original_content.strip()
+    if not stripped_content:
         return
 
-    styled_text = _apply_configured_style(link_text, span_style)
+    styled_text = _render_styled_inline_text(stripped_content, span_style)
     if plain_text_only:
         leading = original_content[:len(original_content) - len(original_content.lstrip())]
         trailing = original_content[len(original_content.rstrip()):]
         rendered_content = leading + styled_text + trailing
-        has_markdown_wrapper = _has_markdown_wrapper(span_style)
+        has_markdown_wrapper = _has_visible_marker_markdown_wrapper(span_style)
     else:
         rendered_content = _render_link(styled_text, url)
         has_markdown_wrapper = False
@@ -408,6 +510,7 @@ def merge_para_with_text(para_block, escape_text_block_prefix=True):
     para_text = _join_rendered_parts(parts)
     if para_block.get('type') == BlockType.TEXT:
         para_text = _strip_text_block_markdown_edges(para_text)
+        para_text = _escape_standalone_marker_rule(para_text)
         if escape_text_block_prefix:
             para_text = escape_text_block_markdown_prefix(para_text)
     return para_text
