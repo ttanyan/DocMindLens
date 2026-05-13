@@ -988,6 +988,14 @@ def get_body_data(para_block):
 def merge_para_with_text_v2(para_block):
     _visible_styles = {'underline', 'strikethrough'}
     para_content = []
+    if para_block.get('type') == BlockType.TITLE:
+        section_number = para_block.get('section_number', '')
+        if section_number:
+            # v2 保持结构化 spans，同时补上 middle_json 已生成的自动标题编号。
+            para_content.append({
+                'type': ContentTypeV2.SPAN_TEXT,
+                'content': f'{section_number} ',
+            })
     for i, line in enumerate(para_block['lines']):
         for j, span in enumerate(line['spans']):
             content = span.get("content", '')
