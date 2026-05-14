@@ -30,6 +30,17 @@ def _style_str(style: str | list[str] | tuple[str, ...] | None) -> Optional[str]
     return ",".join(styles) if styles else None
 
 
+def _script_to_style_name(format_obj: Any) -> Optional[str]:
+    """把 DOCX 上下标脚本位置转换为 Office 内部富文本样式名。"""
+    script = getattr(format_obj, "script", None)
+    script_value = getattr(script, "value", script)
+    if script_value == "super":
+        return "superscript"
+    if script_value == "sub":
+        return "subscript"
+    return None
+
+
 def formatting_to_style_str(format_obj: Any) -> Optional[str]:
     """从 Formatting-like 对象提取 Office 内部富文本样式字符串。"""
     if format_obj is None:
@@ -45,6 +56,9 @@ def formatting_to_style_str(format_obj: Any) -> Optional[str]:
         styles.append("emphasis")
     if getattr(format_obj, "strikethrough", False):
         styles.append("strikethrough")
+    script_style = _script_to_style_name(format_obj)
+    if script_style:
+        styles.append(script_style)
     return ",".join(styles) if styles else None
 
 

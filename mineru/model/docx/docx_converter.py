@@ -548,7 +548,12 @@ class DocxConverter:
         # 检查是否有字体样式
         has_style = any(
             fmt is not None and (
-                fmt.bold or fmt.italic or fmt.underline or fmt.emphasis or fmt.strikethrough
+                fmt.bold
+                or fmt.italic
+                or fmt.underline
+                or fmt.emphasis
+                or fmt.strikethrough
+                or fmt.script != Script.BASELINE
             )
             for _, fmt, _ in paragraph_elements
         )
