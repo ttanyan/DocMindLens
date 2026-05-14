@@ -41,7 +41,7 @@ OFFICE_COMPLEX_HTML_STYLES = {
 OFFICE_EMPHASIS_STYLE = 'text-emphasis: dot; text-emphasis-position: under;'
 STYLE_WRAPPER_OPEN = {
     'emphasis': f'<span style="{OFFICE_EMPHASIS_STYLE}">',
-    'strikethrough': '<del>',
+    'strikethrough': '<s>',
     'italic': '<em>',
     'bold': '<strong>',
     'underline': '<u>',
@@ -50,7 +50,7 @@ STYLE_WRAPPER_OPEN = {
 }
 STYLE_WRAPPER_CLOSE = {
     'emphasis': '</span>',
-    'strikethrough': '</del>',
+    'strikethrough': '</s>',
     'italic': '</em>',
     'bold': '</strong>',
     'underline': '</u>',
@@ -110,7 +110,7 @@ def _apply_html_style(content: str, style: list) -> str:
         content = f'<em>{content}</em>'
 
     if 'strikethrough' in style:
-        content = f'<del>{content}</del>'
+        content = f'<s>{content}</s>'
 
     if 'emphasis' in style:
         content = f'<span style="{OFFICE_EMPHASIS_STYLE}">{content}</span>'
