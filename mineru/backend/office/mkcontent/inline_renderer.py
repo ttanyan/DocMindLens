@@ -26,7 +26,12 @@ inline_right_delimiter = delimiters['inline']['right']
 
 OFFICE_INLINE_SYNTAX_HTML = 'html'
 OFFICE_INLINE_SYNTAX_MARKDOWN = 'markdown'
-OFFICE_SIMPLE_MARKDOWN_STYLES = {'bold', 'italic', 'strikethrough'}
+OFFICE_MARKDOWN_STYLE_WRAPPERS = {
+    frozenset({'bold'}): '**',
+    frozenset({'italic'}): '*',
+    frozenset({'strikethrough'}): '~~',
+    frozenset({'bold', 'italic'}): '***',
+}
 OFFICE_COMPLEX_HTML_STYLES = {
     'underline',
     'emphasis',
@@ -74,17 +79,14 @@ class StyleRangeToken:
 
 
 def _apply_markdown_style(content: str, style: list) -> str:
-    """只渲染 auto 简单 block 允许的单一 Markdown wrapper。"""
+    """按可枚举 Markdown style key 渲染 wrapper，未知组合保持原文。"""
     if not style or not content:
         return content
 
-    style_set = {name for name in style if name}
-    if style_set == {'bold'}:
-        return f'**{content}**'
-    if style_set == {'italic'}:
-        return f'*{content}*'
-    if style_set == {'strikethrough'}:
-        return f'~~{content}~~'
+    style_key = _get_markdown_style_key(style)
+    wrapper = OFFICE_MARKDOWN_STYLE_WRAPPERS.get(style_key)
+    if wrapper:
+        return f'{wrapper}{content}{wrapper}'
     return content
 
 
@@ -451,23 +453,24 @@ def _split_plain_blank_edges(
     return text_spans[:start], text_spans[start:end], text_spans[end:]
 
 
-def _simple_markdown_style_name(style: list | tuple | set | None) -> str | None:
-    """返回可安全使用 Markdown 的单一样式名；空样式返回 None，复杂样式返回空串。"""
+def _get_markdown_style_key(
+    style: list | tuple | set | None,
+) -> frozenset[str] | str | None:
+    """返回可安全使用 Markdown 的样式 key；空样式返回 None，不支持返回空串。"""
     style_set = {name for name in (style or []) if name}
     if not style_set:
         return None
     if style_set & OFFICE_COMPLEX_HTML_STYLES:
         return ''
-    if len(style_set) == 1:
-        style_name = next(iter(style_set))
-        if style_name in OFFICE_SIMPLE_MARKDOWN_STYLES:
-            return style_name
+    style_key = frozenset(style_set)
+    if style_key in OFFICE_MARKDOWN_STYLE_WRAPPERS:
+        return style_key
     return ''
 
 
 def _is_simple_markdown_style(style: list | tuple | set | None) -> bool:
     """判断样式是否适合保留为简单 Markdown 输出。"""
-    return _simple_markdown_style_name(style) != ''
+    return _get_markdown_style_key(style) != ''
 
 
 def _has_markdown_wrapper(
@@ -477,7 +480,7 @@ def _has_markdown_wrapper(
     """判断当前片段是否实际使用 Markdown wrapper，供拼接阶段补空格。"""
     if inline_syntax != OFFICE_INLINE_SYNTAX_MARKDOWN:
         return False
-    return _simple_markdown_style_name(style) in OFFICE_SIMPLE_MARKDOWN_STYLES
+    return _get_markdown_style_key(style) in OFFICE_MARKDOWN_STYLE_WRAPPERS
 
 
 def _iter_para_inline_spans(para_block):
@@ -501,9 +504,10 @@ def _hyperlink_requires_html(span: dict) -> bool:
         if not content.strip():
             continue
         child_style = child.get('style', [])
-        if not _is_simple_markdown_style(child_style):
+        child_style_key = _get_markdown_style_key(child_style)
+        if child_style_key == '':
             return True
-        child_style_keys.add(tuple(child_style or []))
+        child_style_keys.add(child_style_key)
 
     return len(child_style_keys) > 1
 
@@ -555,7 +559,7 @@ def _iter_block_inline_units(para_block):
 def _select_block_inline_syntax(para_block) -> str:
     """按 block 粒度选择 inline 输出语法：简单样式用 Markdown，复杂样式统一 HTML。"""
     units = list(_iter_block_inline_units(para_block))
-    simple_style_names = set()
+    markdown_style_keys = set()
 
     for span in _iter_para_inline_spans(para_block):
         span_type = span.get('type')
@@ -566,12 +570,12 @@ def _select_block_inline_syntax(para_block) -> str:
         content = unit.get('content', '')
         if not content:
             continue
-        style_name = _simple_markdown_style_name(unit.get('style'))
-        if style_name == '':
+        style_key = _get_markdown_style_key(unit.get('style'))
+        if style_key == '':
             return OFFICE_INLINE_SYNTAX_HTML
-        if style_name is not None:
-            simple_style_names.add(style_name)
-            if len(simple_style_names) > 1:
+        if style_key is not None:
+            markdown_style_keys.add(style_key)
+            if len(markdown_style_keys) > 1:
                 return OFFICE_INLINE_SYNTAX_HTML
 
     return OFFICE_INLINE_SYNTAX_MARKDOWN
@@ -749,12 +753,14 @@ def _append_markdown_grouped_text_parts(
     parts: list[RenderedPart],
     text_spans: list[dict],
 ):
-    """渲染简单 Markdown block，只合并相邻完全同样式片段。"""
+    """渲染简单 Markdown block，按可枚举 style key 合并相邻等价片段。"""
     pending_content = []
     pending_style = None
+    pending_style_key = None
+    has_pending = False
 
     def flush_pending():
-        nonlocal pending_content, pending_style
+        nonlocal pending_content, pending_style, pending_style_key, has_pending
         if pending_content:
             _append_text_part(
                 parts,
@@ -764,14 +770,21 @@ def _append_markdown_grouped_text_parts(
             )
             pending_content = []
             pending_style = None
+            pending_style_key = None
+            has_pending = False
 
     for span in text_spans:
         span_style = tuple(span.get('style', []))
-        if pending_style is None:
+        span_style_key = _get_markdown_style_key(span_style)
+        if not has_pending:
             pending_style = span_style
-        if span_style != pending_style:
+            pending_style_key = span_style_key
+            has_pending = True
+        if span_style_key != pending_style_key:
             flush_pending()
             pending_style = span_style
+            pending_style_key = span_style_key
+            has_pending = True
         pending_content.append(str(span.get('content', '')))
     flush_pending()
 
