@@ -23,6 +23,10 @@ from mineru.backend.utils.office_chart import extract_chart_html_from_ooxml
 from mineru.model.office_stream import read_stream_bytes_from_start, rewind_stream
 from mineru.model.pptx.package_normalizer import normalize_pptx_package
 from mineru.model.pptx.xycut_pp_sorter import sort_entries
+from mineru.utils.office_rich_text import (
+    OfficeRichTextSegment,
+    build_rich_text_from_segments,
+)
 from mineru.utils.pdf_reader import image_to_b64str
 
 IGNORED_NOTES_PLACEHOLDER_TYPES: Final = {
@@ -1195,29 +1199,16 @@ class PptxConverter:
                 }
             )
 
-        segments = self._trim_rich_text_segments(segments)
-        if not segments:
-            return ""
-
-        merged_segments = []
-        for segment in segments:
-            if (
-                merged_segments
-                and merged_segments[-1]["hyperlink"] is None
-                and segment["hyperlink"] is None
-                and merged_segments[-1]["style_str"] == segment["style_str"]
-            ):
-                merged_segments[-1]["text"] += segment["text"]
-            else:
-                merged_segments.append(segment)
-
-        return "".join(
-            self._format_text_with_hyperlink(
-                segment["text"],
-                segment["hyperlink"],
-                segment["style_str"],
-            )
-            for segment in merged_segments
+        return build_rich_text_from_segments(
+            [
+                OfficeRichTextSegment(
+                    segment["text"],
+                    segment["style_str"],
+                    segment["hyperlink"],
+                )
+                for segment in segments
+            ],
+            trim_plain_edges=True,
         )
 
     @staticmethod
@@ -1510,6 +1501,7 @@ class PptxConverter:
                 "attribute": "unordered",
                 "level": level,
                 "kind": kind,
+                "start": None,
             }
 
         if kind == "buAutoNum":
@@ -1518,6 +1510,7 @@ class PptxConverter:
                 "attribute": "ordered",
                 "level": level,
                 "kind": kind,
+                "start": marker_info.get("start"),
             }
 
         if kind in ("buChar", "buBlip"):
@@ -1526,6 +1519,7 @@ class PptxConverter:
                 "attribute": "unordered",
                 "level": level,
                 "kind": kind,
+                "start": None,
             }
 
         if marker_info.get("is_list") is True:
@@ -1534,6 +1528,7 @@ class PptxConverter:
                 "attribute": "unordered",
                 "level": level,
                 "kind": kind,
+                "start": None,
             }
 
         # 兜底：段落级标记 + 缩进层级判断
@@ -1543,6 +1538,12 @@ class PptxConverter:
                 "attribute": "ordered",
                 "level": paragraph.level,
                 "kind": "buAutoNum",
+                "start": self._parse_positive_int(
+                    p.find(
+                        ".//a:buAutoNum",
+                        namespaces={"a": self.namespaces["a"]},
+                    ).get("startAt")
+                ),
             }
 
         if p.find(".//a:buChar", namespaces={"a": self.namespaces["a"]}) is not None:
@@ -1551,6 +1552,7 @@ class PptxConverter:
                 "attribute": "unordered",
                 "level": paragraph.level,
                 "kind": "buChar",
+                "start": None,
             }
 
         if paragraph.level > 0:
@@ -1559,6 +1561,7 @@ class PptxConverter:
                 "attribute": "unordered",
                 "level": paragraph.level,
                 "kind": None,
+                "start": None,
             }
 
         return {
@@ -1566,9 +1569,16 @@ class PptxConverter:
             "attribute": "unordered",
             "level": 0,
             "kind": None,
+            "start": None,
         }
 
-    def _ensure_list_level(self, list_stack: list, level: int, attribute: str):
+    def _ensure_list_level(
+        self,
+        list_stack: list,
+        level: int,
+        attribute: str,
+        start: Optional[int] = None,
+    ):
         """将列表栈调整到目标层级，并在必要时创建同级/子级列表块。"""
         while len(list_stack) > level + 1:
             list_stack.pop()
@@ -1584,6 +1594,8 @@ class PptxConverter:
                 "ilevel": ilevel,
                 "content": [],
             }
+            if attribute == "ordered" and start is not None and ilevel == level:
+                new_list_block["start"] = start
 
             if list_stack:
                 list_stack[-1]["content"].append(new_list_block)
@@ -1598,9 +1610,10 @@ class PptxConverter:
         level: int,
         attribute: str,
         content: str,
+        start: Optional[int] = None,
     ):
         """向目标层级列表追加文本项。"""
-        self._ensure_list_level(list_stack, level, attribute)
+        self._ensure_list_level(list_stack, level, attribute, start)
         list_stack[-1]["content"].append(
             {
                 "type": BlockType.TEXT,
@@ -1778,6 +1791,7 @@ class PptxConverter:
                         ),
                         list_info["attribute"],
                         rich_text,
+                        list_info.get("start"),
                     )
                 continue
 
@@ -1886,18 +1900,19 @@ class PptxConverter:
 
         # 1) 直接段落属性
         pPr = p.find("a:pPr", namespaces=self.namespaces)
-        is_list, kind, detail = self._parse_bullet_from_paragraph_properties(pPr)
+        is_list, kind, detail, start = self._parse_bullet_from_paragraph_properties(pPr)
         if is_list is not None:
             return {
                 "is_list": is_list,
                 "kind": kind,
                 "detail": detail,
                 "level": lvl,
+                "start": start,
             }
 
         # 2) 形状级别的列表样式(txBody/a:lstStyle)
         txBody = shape._element.find(".//p:txBody", namespaces=self.namespaces)
-        is_list, kind, detail = self._parse_bullet_from_text_body_list_style(
+        is_list, kind, detail, start = self._parse_bullet_from_text_body_list_style(
             txBody, lvl
         )
         if is_list is not None:
@@ -1906,6 +1921,7 @@ class PptxConverter:
                 "kind": kind,
                 "detail": detail,
                 "level": lvl,
+                "start": start,
             }
 
         # 3) 布局占位符列表样式(如果这是一个占位符)
@@ -1917,9 +1933,12 @@ class PptxConverter:
                 layout_tx = layout_ph._element.find(
                     ".//p:txBody", namespaces=self.namespaces
                 )
-                is_list, kind, detail = self._parse_bullet_from_text_body_list_style(
-                    layout_tx, lvl
-                )
+                (
+                    is_list,
+                    kind,
+                    detail,
+                    start,
+                ) = self._parse_bullet_from_text_body_list_style(layout_tx, lvl)
 
                 # 仅在is_list明确为True/False时使用布局结果
                 if is_list is not None:
@@ -1928,14 +1947,18 @@ class PptxConverter:
                         "kind": kind,
                         "detail": detail,
                         "level": lvl,
+                        "start": start,
                     }
 
                 # 4) 解析主文本样式
                 ph_type = shape.placeholder_format.type
                 master = shape.part.slide.slide_layout.slide_master
-                is_list, kind, detail = self._parse_bullet_from_master_text_styles(
-                    master, ph_type, lvl
-                )
+                (
+                    is_list,
+                    kind,
+                    detail,
+                    start,
+                ) = self._parse_bullet_from_master_text_styles(master, ph_type, lvl)
 
                 # 检查主样式是否有标记信息
                 if kind in ("buChar", "buAutoNum", "buBlip"):
@@ -1944,6 +1967,7 @@ class PptxConverter:
                         "kind": kind,
                         "detail": detail,
                         "level": lvl,
+                        "start": start,
                     }
                 elif is_list is not None:
                     return {
@@ -1951,6 +1975,7 @@ class PptxConverter:
                         "kind": kind,
                         "detail": detail,
                         "level": lvl,
+                        "start": start,
                     }
 
             # If layout has explicit is_list value but master didn't override it, use layout
@@ -1963,6 +1988,7 @@ class PptxConverter:
             "kind": None,
             "detail": None,
             "level": lvl,
+            "start": None,
         }
 
     def _get_paragraph_level(self, paragraph) -> int:
@@ -1985,9 +2011,20 @@ class PptxConverter:
                 pass
         return 0
 
+    @staticmethod
+    def _parse_positive_int(value: Optional[str]) -> Optional[int]:
+        """解析正整数属性，非法或缺失时返回 None。"""
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
     def _parse_bullet_from_paragraph_properties(
         self, pPr
-    ) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+    ) -> tuple[Optional[bool], Optional[str], Optional[str], Optional[int]]:
         """
         从段落属性节点解析项目符号或编号信息。
         检查'a:pPr'或'a:lvlXpPr'元素，并提取关于项目符号字符、自动编号、
@@ -1997,39 +2034,45 @@ class PptxConverter:
             pPr: 段落属性XML元素('a:pPr'或'a:lvlXpPr')。
 
         Returns:
-            返回一个3元组(`is_list`, `kind`, `detail`)，其中：
+            返回一个4元组(`is_list`, `kind`, `detail`, `start`)，其中：
             `is_list` - 为True/False/None，表示这是否是列表项；
             `kind` - 为以下之一：`buChar`(项目符号字符)、`buAutoNum`(自动编号)、
             `buBlip`(图片项目符号)、`buNone`(无标记)或None，描述标记类型；
             `detail` - 项目符号字符、编号类型字符串，或如果不适用则为None。
+            `start` - 自动编号起始值；未声明时为None。
         """
         if pPr is None:
-            return (None, None, None)
+            return (None, None, None, None)
 
         # 显式指定无项目符号
         if pPr.find("a:buNone", namespaces=self.namespaces) is not None:
-            return (False, "buNone", None)
+            return (False, "buNone", None, None)
 
         # 项目符号字符
         buChar = pPr.find("a:buChar", namespaces=self.namespaces)
         if buChar is not None:
-            return (True, "buChar", buChar.get("char"))
+            return (True, "buChar", buChar.get("char"), None)
 
         # 自动编号
         buAuto = pPr.find("a:buAutoNum", namespaces=self.namespaces)
         if buAuto is not None:
-            return (True, "buAutoNum", buAuto.get("type"))
+            return (
+                True,
+                "buAutoNum",
+                buAuto.get("type"),
+                self._parse_positive_int(buAuto.get("startAt")),
+            )
 
         # 图片项目符号
         buBlip = pPr.find("a:buBlip", namespaces=self.namespaces)
         if buBlip is not None:
-            return (True, "buBlip", "image")
+            return (True, "buBlip", "image", None)
 
-        return (None, None, None)
+        return (None, None, None, None)
 
     def _parse_bullet_from_text_body_list_style(
         self, txBody, lvl: int
-    ) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+    ) -> tuple[Optional[bool], Optional[str], Optional[str], Optional[int]]:
         """
         从文本体的列表样式中解析项目符号或编号信息。
         在'txBody'下搜索'a:lstStyle/a:lvl{lvl+1}pPr'，并使用级别特定的段落属性
@@ -2039,21 +2082,21 @@ class PptxConverter:
             txBody: 文本体XML元素'p:txBody'。
             lvl: 段落级别，范围在(0, 8)内。
         Returns:
-            返回一个3元组(`is_list`, `kind`, `detail`)，其中：
+            返回一个4元组(`is_list`, `kind`, `detail`, `start`)，其中：
             `is_list` - 为True/False/None，表示这是否是列表项；
             `kind` - 为以下之一：`buChar`、`buAutoNum`、`buBlip`、`buNone`或None；
             `detail` - 项目符号字符、编号类型字符串，或如果不适用则为None。
+            `start` - 自动编号起始值；未声明时为None。
         """
         if txBody is None:
-            return (None, None, None)
+            return (None, None, None, None)
         lstStyle = txBody.find("a:lstStyle", namespaces=self.namespaces)
         lvl_pPr = self._find_level_properties_in_list_style(lstStyle, lvl)
-        is_list, kind, detail = self._parse_bullet_from_paragraph_properties(lvl_pPr)
-        return (is_list, kind, detail)
+        return self._parse_bullet_from_paragraph_properties(lvl_pPr)
 
     def _parse_bullet_from_master_text_styles(
         self, slide_master, placeholder_type, lvl: int
-    ) -> tuple[Optional[bool], Optional[str], Optional[str]]:
+    ) -> tuple[Optional[bool], Optional[str], Optional[str], Optional[int]]:
         """
         从主幻灯片的文本样式中解析项目符号或编号信息。
         在主幻灯片的'p:txStyles'中查找相应的样式bucket('titleStyle'、'bodyStyle'或
@@ -2065,18 +2108,18 @@ class PptxConverter:
             lvl: 段落级别，范围在(0, 8)内。
 
         Returns:
-            返回一个3元组(`is_list`, `kind`, `detail`)，其中：
+            返回一个4元组(`is_list`, `kind`, `detail`, `start`)，其中：
             `is_list` - 为True/False/None，表示这是否是列表项；
             `kind` - 为以下之一：`buChar`、`buAutoNum`、`buBlip`、`buNone`或None；
             `detail` - 项目符号字符、编号类型字符串，或如果不适用则为None。
+            `start` - 自动编号起始值；未声明时为None。
         """
         style = self._get_master_text_style_node(slide_master, placeholder_type)
         if style is None:
-            return (None, None, None)
+            return (None, None, None, None)
 
         lvl_pPr = style.find(f".//a:lvl{lvl + 1}pPr", namespaces=self.namespaces)
-        is_list, kind, detail = self._parse_bullet_from_paragraph_properties(lvl_pPr)
-        return (is_list, kind, detail)
+        return self._parse_bullet_from_paragraph_properties(lvl_pPr)
 
     def _find_level_properties_in_list_style(self, lstStyle, lvl: int):
         """Find the level-specific paragraph properties node from a list style.

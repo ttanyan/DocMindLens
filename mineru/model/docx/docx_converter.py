@@ -21,6 +21,19 @@ from mineru.model.docx.tools.office_xml import read_str
 from mineru.model.docx.tools.math.omml import oMath2Latex
 from mineru.utils.docx_formatting import Formatting, Script
 from mineru.utils.enum_class import BlockType, ContentType
+from mineru.utils.office_rich_text import (
+    append_rich_text_element,
+    build_text_mappings_from_elements,
+    format_hyperlink_group,
+    format_text_tag,
+    format_text_with_hyperlink,
+    formatting_to_style_str,
+    has_non_visible_text_style,
+    has_visible_style,
+    is_valid_hyperlink_target,
+    normalize_format_for_text,
+    should_keep_group_text,
+)
 from mineru.backend.utils.office_image import (
     serialize_office_image,
 )
@@ -144,20 +157,7 @@ class DocxConverter:
         Returns:
             Optional[str]: 样式字符串（如 "bold,italic"），无样式时返回 None
         """
-        if format_obj is None:
-            return None
-        styles = []
-        if format_obj.bold:
-            styles.append('bold')
-        if format_obj.italic:
-            styles.append('italic')
-        if format_obj.underline:
-            styles.append('underline')
-        if format_obj.emphasis:
-            styles.append('emphasis')
-        if format_obj.strikethrough:
-            styles.append('strikethrough')
-        return ','.join(styles) if styles else None
+        return formatting_to_style_str(format_obj)
 
     @staticmethod
     def _has_visible_style(format_obj) -> bool:
@@ -172,16 +172,12 @@ class DocxConverter:
         Returns:
             bool: 是否包含可见样式
         """
-        if format_obj is None:
-            return False
-        return bool(format_obj.underline or format_obj.emphasis or format_obj.strikethrough)
+        return has_visible_style(format_obj)
 
     @staticmethod
     def _has_non_visible_text_style(format_obj) -> bool:
         """判断格式是否只有空白文本不可见的字形样式。"""
-        if format_obj is None:
-            return False
-        return bool(format_obj.bold or format_obj.italic)
+        return has_non_visible_text_style(format_obj)
 
     @classmethod
     def _normalize_format_for_text(
@@ -196,31 +192,11 @@ class DocxConverter:
         preserve_blank_non_visible_style 用于保留同一文本片段内空白 run 的
         bold/italic：这些样式自身不让空格可见，但可能是连续同样式文本的一部分。
         """
-        if format_obj is None:
-            return None
-        if text.strip():
-            return format_obj
-
-        updates = {}
-        if format_obj.underline_style == "words":
-            updates["underline"] = False
-            updates["underline_style"] = ""
-        if (
-            cls._has_non_visible_text_style(format_obj)
-            and not preserve_blank_non_visible_style
-        ):
-            updates["bold"] = False
-            updates["italic"] = False
-
-        if updates:
-            format_obj = format_obj.model_copy(update=updates)
-        if not cls._has_visible_style(format_obj):
-            if preserve_blank_non_visible_style and cls._has_non_visible_text_style(
-                format_obj
-            ):
-                return format_obj
-            return None
-        return format_obj
+        return normalize_format_for_text(
+            format_obj,
+            text,
+            preserve_blank_non_visible_style=preserve_blank_non_visible_style,
+        )
 
     @classmethod
     def _find_adjacent_non_blank_run_format(
@@ -286,13 +262,11 @@ class DocxConverter:
         preserve_plain_blank: bool = False,
     ) -> bool:
         """判断当前累积 run 是否需要输出，保留夹在可见样式之间的普通空白。"""
-        if not text:
-            return False
-        if text.strip():
-            return True
-        if cls._has_visible_style(format_obj):
-            return True
-        return preserve_plain_blank
+        return should_keep_group_text(
+            text,
+            format_obj,
+            preserve_plain_blank=preserve_plain_blank,
+        )
 
     @staticmethod
     def _append_paragraph_element(
@@ -304,21 +278,7 @@ class DocxConverter:
         hyperlink: Optional[Union[AnyUrl, Path, str]],
     ) -> None:
         """追加段落元素；相邻同超链接且同格式的 run 合并为一个元素。"""
-        if (
-            hyperlink is not None
-            and paragraph_elements
-            and paragraph_elements[-1][2] is not None
-            and str(paragraph_elements[-1][2]) == str(hyperlink)
-            and paragraph_elements[-1][1] == format_obj
-        ):
-            previous_text, previous_format, previous_hyperlink = paragraph_elements[-1]
-            paragraph_elements[-1] = (
-                f"{previous_text}{text}",
-                previous_format,
-                previous_hyperlink,
-            )
-            return
-        paragraph_elements.append((text, format_obj, hyperlink))
+        append_rich_text_element(paragraph_elements, text, format_obj, hyperlink)
 
     @staticmethod
     def _is_hidden_run(run: Run) -> bool:
@@ -356,21 +316,7 @@ class DocxConverter:
         Returns:
             str: 格式化后的文本
         """
-        if not text:
-            return text
-
-        # 检查超链接是否有效（非空）
-        if hyperlink is None:
-            # 无超链接：只有有样式时才包裹 <text> 标签
-            return cls._format_text_tag(text, style_str)
-
-        hyperlink_str = str(hyperlink)
-        if not hyperlink_str or hyperlink_str.strip() == "" or hyperlink_str == ".":
-            return cls._format_text_tag(text, style_str)
-
-        # 有超链接：构建 <text> 标签（含可选样式）
-        text_tag = cls._format_text_tag(text, style_str, force_tag=True)
-        return f"<hyperlink>{text_tag}<url>{hyperlink_str}</url></hyperlink>"
+        return format_text_with_hyperlink(text, hyperlink, style_str)
 
     @staticmethod
     def _format_text_tag(
@@ -380,23 +326,14 @@ class DocxConverter:
         force_tag: bool = False,
     ) -> str:
         """生成内部富文本标记；无样式时普通文本不额外包裹。"""
-        if not text:
-            return text
-        if style_str:
-            return f'<text style="{style_str}">{text}</text>'
-        if force_tag:
-            return f"<text>{text}</text>"
-        return text
+        return format_text_tag(text, style_str, force_tag=force_tag)
 
     @staticmethod
     def _is_valid_hyperlink_target(
         hyperlink: Optional[Union[AnyUrl, Path, str]],
     ) -> bool:
         """判断 hyperlink 是否是可输出的真实链接目标。"""
-        if hyperlink is None:
-            return False
-        hyperlink_str = str(hyperlink)
-        return bool(hyperlink_str and hyperlink_str.strip() and hyperlink_str != ".")
+        return is_valid_hyperlink_target(hyperlink)
 
     @classmethod
     def _format_hyperlink_group(
@@ -406,23 +343,7 @@ class DocxConverter:
         ],
     ) -> str:
         """将连续同 URL 的 hyperlink 片段输出为一个外层 hyperlink 标记。"""
-        if not group:
-            return ""
-        hyperlink = group[0][2]
-        if not cls._is_valid_hyperlink_target(hyperlink):
-            return "".join(
-                cls._format_text_tag(text, cls._get_style_str_from_format(format_obj))
-                for text, format_obj, _ in group
-                if text
-            )
-
-        text_tags = []
-        for text, format_obj, _ in group:
-            if not text:
-                continue
-            style_str = cls._get_style_str_from_format(format_obj)
-            text_tags.append(cls._format_text_tag(text, style_str, force_tag=True))
-        return f"<hyperlink>{''.join(text_tags)}<url>{hyperlink}</url></hyperlink>"
+        return format_hyperlink_group(group)
 
     @classmethod
     def _build_text_mappings_from_elements(
@@ -432,41 +353,7 @@ class DocxConverter:
         ],
     ) -> list[tuple[str, str]]:
         """按连续同 URL hyperlink 分组，生成原文到富文本标记的映射。"""
-        mappings = []
-        index = 0
-        while index < len(paragraph_elements):
-            text, format_obj, hyperlink = paragraph_elements[index]
-            if not text:
-                index += 1
-                continue
-
-            if cls._is_valid_hyperlink_target(hyperlink):
-                group = [(text, format_obj, hyperlink)]
-                index += 1
-                while index < len(paragraph_elements):
-                    next_text, next_format, next_hyperlink = paragraph_elements[index]
-                    if (
-                        not next_text
-                        or not cls._is_valid_hyperlink_target(next_hyperlink)
-                        or str(next_hyperlink) != str(hyperlink)
-                    ):
-                        break
-                    group.append((next_text, next_format, next_hyperlink))
-                    index += 1
-
-                original_text = "".join(item_text for item_text, _, _ in group)
-                mappings.append((original_text, cls._format_hyperlink_group(group)))
-                continue
-
-            style_str = cls._get_style_str_from_format(format_obj)
-            formatted_text = cls._format_text_with_hyperlink(
-                text,
-                hyperlink,
-                style_str,
-            )
-            mappings.append((text, formatted_text))
-            index += 1
-        return mappings
+        return build_text_mappings_from_elements(paragraph_elements)
 
     def _build_text_from_elements(
         self,
