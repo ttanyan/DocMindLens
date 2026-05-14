@@ -231,7 +231,7 @@ def parse_text_block_spans(content: str) -> list:
     - <hyperlink><text [style="..."]>...</text><url>...</url></hyperlink>: 超链接（支持样式）
     - <text style="...">...</text>: 带字体样式的普通文本
 
-    字体样式值（逗号分隔）：bold, italic, underline, strikethrough
+    字体样式值（逗号分隔）：bold, italic, underline, emphasis, strikethrough, superscript, subscript
 
     Args:
         content: 文本块的content字符串，可能包含特殊标签

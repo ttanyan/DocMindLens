@@ -1479,6 +1479,8 @@ class XlsxConverter:
             return text_html
 
         wrapped = text_html
+        if getattr(inline_font, "strike", False) or getattr(inline_font, "u", None):
+            wrapped = wrapped.replace(" ", "&nbsp;")
         vert_align = getattr(inline_font, "vertAlign", None)
         if vert_align == "superscript":
             wrapped = f"<sup>{wrapped}</sup>"
