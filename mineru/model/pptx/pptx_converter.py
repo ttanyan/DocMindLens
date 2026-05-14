@@ -1502,6 +1502,7 @@ class PptxConverter:
                 "level": level,
                 "kind": kind,
                 "start": None,
+                "start_is_explicit_restart": False,
             }
 
         if kind == "buAutoNum":
@@ -1511,6 +1512,10 @@ class PptxConverter:
                 "level": level,
                 "kind": kind,
                 "start": marker_info.get("start"),
+                "start_is_explicit_restart": marker_info.get(
+                    "start_is_explicit_restart",
+                    False,
+                ),
             }
 
         if kind in ("buChar", "buBlip"):
@@ -1520,6 +1525,7 @@ class PptxConverter:
                 "level": level,
                 "kind": kind,
                 "start": None,
+                "start_is_explicit_restart": False,
             }
 
         if marker_info.get("is_list") is True:
@@ -1529,21 +1535,20 @@ class PptxConverter:
                 "level": level,
                 "kind": kind,
                 "start": None,
+                "start_is_explicit_restart": False,
             }
 
         # 兜底：段落级标记 + 缩进层级判断
-        if p.find(".//a:buAutoNum", namespaces={"a": self.namespaces["a"]}) is not None:
+        bu_auto_num = p.find(".//a:buAutoNum", namespaces={"a": self.namespaces["a"]})
+        if bu_auto_num is not None:
+            start = self._parse_positive_int(bu_auto_num.get("startAt"))
             return {
                 "is_list": True,
                 "attribute": "ordered",
                 "level": paragraph.level,
                 "kind": "buAutoNum",
-                "start": self._parse_positive_int(
-                    p.find(
-                        ".//a:buAutoNum",
-                        namespaces={"a": self.namespaces["a"]},
-                    ).get("startAt")
-                ),
+                "start": start,
+                "start_is_explicit_restart": start is not None,
             }
 
         if p.find(".//a:buChar", namespaces={"a": self.namespaces["a"]}) is not None:
@@ -1553,6 +1558,7 @@ class PptxConverter:
                 "level": paragraph.level,
                 "kind": "buChar",
                 "start": None,
+                "start_is_explicit_restart": False,
             }
 
         if paragraph.level > 0:
@@ -1562,6 +1568,7 @@ class PptxConverter:
                 "level": paragraph.level,
                 "kind": None,
                 "start": None,
+                "start_is_explicit_restart": False,
             }
 
         return {
@@ -1570,6 +1577,7 @@ class PptxConverter:
             "level": 0,
             "kind": None,
             "start": None,
+            "start_is_explicit_restart": False,
         }
 
     def _ensure_list_level(
@@ -1578,6 +1586,7 @@ class PptxConverter:
         level: int,
         attribute: str,
         start: Optional[int] = None,
+        start_is_explicit_restart: bool = False,
     ):
         """将列表栈调整到目标层级，并在必要时创建同级/子级列表块。"""
         while len(list_stack) > level + 1:
@@ -1586,7 +1595,13 @@ class PptxConverter:
         if len(list_stack) == level + 1 and list_stack[level].get("attribute") != attribute:
             list_stack.pop()
 
-        if self._should_restart_ordered_list(list_stack, level, attribute, start):
+        if self._should_restart_ordered_list(
+            list_stack,
+            level,
+            attribute,
+            start,
+            start_is_explicit_restart,
+        ):
             list_stack.pop()
 
         while len(list_stack) < level + 1:
@@ -1627,8 +1642,11 @@ class PptxConverter:
         level: int,
         attribute: str,
         start: Optional[int],
+        start_is_explicit_restart: bool,
     ) -> bool:
         """判断 startAt 是否表示当前同级有序列表需要重新开始。"""
+        if not start_is_explicit_restart:
+            return False
         if attribute != "ordered" or start is None:
             return False
         if len(list_stack) != level + 1:
@@ -1647,9 +1665,16 @@ class PptxConverter:
         attribute: str,
         content: str,
         start: Optional[int] = None,
+        start_is_explicit_restart: bool = False,
     ):
         """向目标层级列表追加文本项。"""
-        self._ensure_list_level(list_stack, level, attribute, start)
+        self._ensure_list_level(
+            list_stack,
+            level,
+            attribute,
+            start,
+            start_is_explicit_restart,
+        )
         list_stack[-1]["content"].append(
             {
                 "type": BlockType.TEXT,
@@ -1828,6 +1853,7 @@ class PptxConverter:
                         list_info["attribute"],
                         rich_text,
                         list_info.get("start"),
+                        list_info.get("start_is_explicit_restart", False),
                     )
                 continue
 
@@ -1929,6 +1955,7 @@ class PptxConverter:
             `is_list` - True/False/None，表示这是否是列表项；
             `kind` - 为以下之一：`buChar`、`buAutoNum`、`buBlip`、`buNone`或None，描述标记类型；
             `detail` - 项目符号字符或编号类型字符串，或如果不适用则为None；
+            `start_is_explicit_restart` - True 表示 start 来自段落级显式 startAt；
             `level` - 段落级别，范围在(0, 8)内。
         """
         p = paragraph._element
@@ -1944,6 +1971,8 @@ class PptxConverter:
                 "detail": detail,
                 "level": lvl,
                 "start": start,
+                # 只有段落自身声明的 startAt 才表示一次显式重启。
+                "start_is_explicit_restart": kind == "buAutoNum" and start is not None,
             }
 
         # 2) 形状级别的列表样式(txBody/a:lstStyle)
@@ -1958,6 +1987,7 @@ class PptxConverter:
                 "detail": detail,
                 "level": lvl,
                 "start": start,
+                "start_is_explicit_restart": False,
             }
 
         # 3) 布局占位符列表样式(如果这是一个占位符)
@@ -1984,6 +2014,7 @@ class PptxConverter:
                         "detail": detail,
                         "level": lvl,
                         "start": start,
+                        "start_is_explicit_restart": False,
                     }
 
                 # 4) 解析主文本样式
@@ -2004,6 +2035,7 @@ class PptxConverter:
                         "detail": detail,
                         "level": lvl,
                         "start": start,
+                        "start_is_explicit_restart": False,
                     }
                 elif is_list is not None:
                     return {
@@ -2012,6 +2044,7 @@ class PptxConverter:
                         "detail": detail,
                         "level": lvl,
                         "start": start,
+                        "start_is_explicit_restart": False,
                     }
 
             # If layout has explicit is_list value but master didn't override it, use layout
@@ -2025,6 +2058,7 @@ class PptxConverter:
             "detail": None,
             "level": lvl,
             "start": None,
+            "start_is_explicit_restart": False,
         }
 
     def _get_paragraph_level(self, paragraph) -> int:
