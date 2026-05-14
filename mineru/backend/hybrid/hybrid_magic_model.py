@@ -156,6 +156,10 @@ class MagicModel:
                 block_type = BlockType.INTERLINE_EQUATION
                 span_type = ContentType.INTERLINE_EQUATION
 
+            if span_type == ContentType.TEXT and block_content is None:
+                # 文本类块缺失 content 时按空文本处理，避免 VLM mkcontent 渲染阶段遇到 None。
+                block_content = ""
+
             # code 和 algorithm 类型的块，如果内容中包含行内公式，则需要将块类型切换为 algorithm
             switch_code_to_algorithm = False
 
