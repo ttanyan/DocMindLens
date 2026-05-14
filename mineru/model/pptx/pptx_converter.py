@@ -1586,6 +1586,9 @@ class PptxConverter:
         if len(list_stack) == level + 1 and list_stack[level].get("attribute") != attribute:
             list_stack.pop()
 
+        if self._should_restart_ordered_list(list_stack, level, attribute, start):
+            list_stack.pop()
+
         while len(list_stack) < level + 1:
             ilevel = len(list_stack)
             new_list_block = {
@@ -1603,6 +1606,39 @@ class PptxConverter:
                 self.cur_page.append(new_list_block)
 
             list_stack.append(new_list_block)
+
+    @staticmethod
+    def _get_ordered_list_next_number(list_block: dict) -> int:
+        """计算当前有序列表继续追加同级文本项时应使用的下一个编号。"""
+        try:
+            start = int(list_block.get("start", 1))
+        except (TypeError, ValueError):
+            start = 1
+        direct_item_count = sum(
+            1
+            for item in list_block.get("content", [])
+            if item.get("type") != BlockType.LIST
+        )
+        return start + direct_item_count
+
+    def _should_restart_ordered_list(
+        self,
+        list_stack: list,
+        level: int,
+        attribute: str,
+        start: Optional[int],
+    ) -> bool:
+        """判断 startAt 是否表示当前同级有序列表需要重新开始。"""
+        if attribute != "ordered" or start is None:
+            return False
+        if len(list_stack) != level + 1:
+            return False
+        current_list = list_stack[level]
+        if current_list.get("attribute") != "ordered":
+            return False
+        if not current_list.get("content"):
+            return False
+        return start != self._get_ordered_list_next_number(current_list)
 
     def _append_list_item(
         self,
