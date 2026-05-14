@@ -60,6 +60,9 @@ class RenderedPart:
 
     span_type: str
     rendered_content: str
+    raw_content: str = ''
+    style: list = field(default_factory=list)
+    has_markdown_wrapper: bool = False
 
 
 @dataclass
@@ -144,11 +147,17 @@ def get_title_level(para_block):
 def _make_rendered_part(
     span_type,
     rendered_content: str,
+    raw_content: str = '',
+    style: list | None = None,
+    has_markdown_wrapper: bool = False,
 ) -> RenderedPart:
-    """构造段落渲染中间片段，只保留拼接阶段实际需要的数据。"""
+    """构造段落渲染中间片段，并保留 Markdown 边界补空格所需的原始信息。"""
     return RenderedPart(
         span_type=span_type,
         rendered_content=rendered_content,
+        raw_content=raw_content,
+        style=style or [],
+        has_markdown_wrapper=has_markdown_wrapper,
     )
 
 
@@ -180,9 +189,40 @@ def _is_boundary_text_char(ch: str) -> bool:
     return not _is_punctuation_or_symbol(ch)
 
 
+def _needs_markdown_boundary_space(
+    prev_part: RenderedPart,
+    next_part: RenderedPart,
+) -> bool:
+    """判断 Markdown wrapper 后是否需要补空格，避免标点结尾的 wrapper 无法被解析。"""
+    if not prev_part.has_markdown_wrapper:
+        return False
+    if next_part.span_type in {
+        ContentType.HYPERLINK,
+        ContentType.INLINE_EQUATION,
+        ContentType.INTERLINE_EQUATION,
+    }:
+        return False
+
+    prev_raw = prev_part.raw_content
+    next_raw = next_part.raw_content
+    if not prev_raw.strip() or not next_raw.strip():
+        return False
+    if prev_raw[-1].isspace() or next_raw[0].isspace():
+        return False
+
+    prev_char = _get_last_non_whitespace_char(prev_raw)
+    next_char = _get_first_non_whitespace_char(next_raw)
+    if prev_char is None or next_char is None:
+        return False
+    if not _is_punctuation_or_symbol(prev_char):
+        return False
+    return _is_boundary_text_char(next_char)
+
+
 def _join_rendered_parts(parts: list[RenderedPart]) -> str:
     """按 Office 段落规则拼接行内片段，并为行内公式补必要空格。"""
     rendered_parts = []
+    prev_part = None
 
     for i, part in enumerate(parts):
         span_type = part.span_type
@@ -196,7 +236,11 @@ def _join_rendered_parts(parts: list[RenderedPart]) -> str:
             if not is_last:
                 rendered_parts.append(' ')
         else:
+            if prev_part is not None and _needs_markdown_boundary_space(prev_part, part):
+                rendered_parts.append(' ')
             rendered_parts.append(content)
+
+        prev_part = part
 
     return ''.join(rendered_parts)
 
@@ -346,6 +390,9 @@ def _append_text_part(
                     inline_syntax,
                     render_style,
                 ),
+                raw_content=original_content,
+                style=render_style,
+                has_markdown_wrapper=_has_markdown_wrapper(render_style, inline_syntax),
             )
         )
         return
@@ -366,6 +413,9 @@ def _append_text_part(
             _make_rendered_part(
                 ContentType.TEXT,
                 leading + styled + trailing,
+                raw_content=original_content,
+                style=render_style,
+                has_markdown_wrapper=_has_markdown_wrapper(render_style, inline_syntax),
             )
         )
     elif original_content:
@@ -381,6 +431,9 @@ def _append_text_part(
             _make_rendered_part(
                 ContentType.TEXT,
                 rendered_content,
+                raw_content=original_content,
+                style=render_style,
+                has_markdown_wrapper=_has_markdown_wrapper(render_style, inline_syntax),
             )
         )
 
@@ -415,6 +468,16 @@ def _simple_markdown_style_name(style: list | tuple | set | None) -> str | None:
 def _is_simple_markdown_style(style: list | tuple | set | None) -> bool:
     """判断样式是否适合保留为简单 Markdown 输出。"""
     return _simple_markdown_style_name(style) != ''
+
+
+def _has_markdown_wrapper(
+    style: list | tuple | set | None,
+    inline_syntax: str,
+) -> bool:
+    """判断当前片段是否实际使用 Markdown wrapper，供拼接阶段补空格。"""
+    if inline_syntax != OFFICE_INLINE_SYNTAX_MARKDOWN:
+        return False
+    return _simple_markdown_style_name(style) in OFFICE_SIMPLE_MARKDOWN_STYLES
 
 
 def _iter_para_inline_spans(para_block):
@@ -489,57 +552,6 @@ def _iter_block_inline_units(para_block):
             }
 
 
-def _has_markdown_boundary_risk(units: list[dict]) -> bool:
-    """复用原有补空格风险：命中时直接切 HTML，避免运行期修补 Markdown。"""
-    previous_unit = None
-    boundary_span_types = {
-        ContentType.HYPERLINK,
-        ContentType.INLINE_EQUATION,
-        ContentType.INTERLINE_EQUATION,
-    }
-    for unit in units:
-        if previous_unit is None:
-            previous_unit = unit
-            continue
-        previous_style_name = _simple_markdown_style_name(previous_unit.get('style'))
-        current_style_name = _simple_markdown_style_name(unit.get('style'))
-        if (
-            not (previous_style_name or current_style_name)
-            or previous_unit.get('span_type') in boundary_span_types
-            or unit.get('span_type') in boundary_span_types
-        ):
-            previous_unit = unit
-            continue
-
-        previous_content = previous_unit.get('content', '')
-        next_content = unit.get('content', '')
-        if not previous_content.strip() or not next_content.strip():
-            previous_unit = unit
-            continue
-        if previous_content[-1].isspace() or next_content[0].isspace():
-            previous_unit = unit
-            continue
-
-        previous_char = _get_last_non_whitespace_char(previous_content)
-        next_char = _get_first_non_whitespace_char(next_content)
-        if (
-            previous_char is not None
-            and next_char is not None
-            and _is_punctuation_or_symbol(previous_char)
-            and _is_boundary_text_char(next_char)
-        ):
-            return True
-        if (
-            previous_char is not None
-            and next_char is not None
-            and _is_boundary_text_char(previous_char)
-            and _is_punctuation_or_symbol(next_char)
-        ):
-            return True
-        previous_unit = unit
-    return False
-
-
 def _select_block_inline_syntax(para_block) -> str:
     """按 block 粒度选择 inline 输出语法：简单样式用 Markdown，复杂样式统一 HTML。"""
     units = list(_iter_block_inline_units(para_block))
@@ -562,8 +574,6 @@ def _select_block_inline_syntax(para_block) -> str:
             if len(simple_style_names) > 1:
                 return OFFICE_INLINE_SYNTAX_HTML
 
-    if _has_markdown_boundary_risk(units):
-        return OFFICE_INLINE_SYNTAX_HTML
     return OFFICE_INLINE_SYNTAX_MARKDOWN
 
 
