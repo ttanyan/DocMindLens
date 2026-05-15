@@ -160,13 +160,12 @@ def classify_hybrid(pdf_bytes):
                 )
                 return "ocr"
 
-            ascii_punct_signal = _get_boundary_ascii_punct_signal_from_samples(
-                text_samples,
-                page_count,
+            ascii_punct_signal = _get_sampled_ascii_punct_signal_from_samples(
+                text_samples
             )
             if ascii_punct_signal["triggered"]:
                 logger.debug(
-                    "Classify PDF as OCR due to suspicious boundary ASCII punctuation "
+                    "Classify PDF as OCR due to suspicious sampled-page ASCII punctuation "
                     f"text: page={ascii_punct_signal['page_index'] + 1}, "
                     f"text_chars={ascii_punct_signal['cleaned_text_chars']}, "
                     f"ascii_punct_ratio="
@@ -444,12 +443,8 @@ def _count_ascii_punct_run_chars(text: str) -> int:
     return run_chars
 
 
-def _get_boundary_ascii_punct_signal_from_samples(text_samples, page_count: int):
-    """只检查首页和末页的 ASCII 标点密集度，用于识别无 ToUnicode 的乱码文本。"""
-    boundary_page_indices = {0}
-    if page_count > 1:
-        boundary_page_indices.add(page_count - 1)
-
+def _get_sampled_ascii_punct_signal_from_samples(text_samples):
+    """检查所有抽样页的 ASCII 标点密集度，用于识别无 ToUnicode 的乱码文本。"""
     best_signal = {
         "triggered": False,
         "page_index": None,
@@ -462,9 +457,6 @@ def _get_boundary_ascii_punct_signal_from_samples(text_samples, page_count: int)
 
     for text_sample in text_samples:
         page_index = text_sample.get("page_index")
-        if page_index not in boundary_page_indices:
-            continue
-
         cleaned_text = text_sample["cleaned_text"]
         cleaned_text_chars = len(cleaned_text)
         ascii_punct_count = sum(
@@ -495,7 +487,7 @@ def _get_boundary_ascii_punct_signal_from_samples(text_samples, page_count: int)
             signal["triggered"] = True
             return signal
 
-        # 未触发时保留最可疑的边界页指标，方便日志扩展和后续排查阈值边界。
+        # 未触发时保留最可疑的抽样页指标，方便日志扩展和后续排查阈值边界。
         if (
             signal["punct_run_ratio"],
             signal["ascii_punct_ratio"],
