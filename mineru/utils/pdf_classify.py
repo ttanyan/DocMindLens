@@ -33,6 +33,10 @@ TEXT_QUALITY_MIN_CHARS = 300
 TEXT_QUALITY_BAD_THRESHOLD = 0.03
 TEXT_QUALITY_GOOD_THRESHOLD = 0.005
 MAX_PAGE_ASPECT_RATIO = 10.0
+SUSPICIOUS_CJK_72XX_START = 0x7280
+SUSPICIOUS_CJK_72XX_END = 0x72FF
+SUSPICIOUS_CJK_72XX_COUNT_THRESHOLD = 30
+SUSPICIOUS_CJK_72XX_CJK_RATIO_THRESHOLD = 0.03
 
 _ALLOWED_CONTROL_CODES = {9, 10, 13}
 _PRIVATE_USE_AREA_START = 0xE000
@@ -107,7 +111,7 @@ def classify_hybrid(pdf_bytes):
                 page_indices,
             )
             if extreme_page_index is not None:
-                logger.info(
+                logger.debug(
                     "Classify PDF as OCR due to extreme sampled-page aspect ratio: "
                     f"page={extreme_page_index + 1}, ratio={extreme_ratio:.2f}"
                 )
@@ -132,6 +136,20 @@ def classify_hybrid(pdf_bytes):
                 should_run_pdfminer_fallback = abnormal_ratio > TEXT_QUALITY_GOOD_THRESHOLD
             else:
                 should_run_pdfminer_fallback = True
+
+            u72xx_signal = get_u72xx_text_signal_pdfium(pdf, page_indices)
+            if (
+                u72xx_signal["u72xx_count"]
+                >= SUSPICIOUS_CJK_72XX_COUNT_THRESHOLD
+                and u72xx_signal["u72xx_cjk_ratio"]
+                >= SUSPICIOUS_CJK_72XX_CJK_RATIO_THRESHOLD
+            ):
+                logger.debug(
+                    "Classify PDF as OCR due to suspicious U+7280-U+72FF text: "
+                    f"count={u72xx_signal['u72xx_count']}, "
+                    f"cjk_ratio={u72xx_signal['u72xx_cjk_ratio']:.4f}"
+                )
+                return "ocr"
 
             if (
                 get_high_image_coverage_ratio_pdfium(pdf, page_indices)
@@ -316,6 +334,39 @@ def get_text_quality_signal_pdfium(pdf_doc, page_indices):
         "replacement_char_count": replacement_char_count,
         "control_char_count": control_char_count,
         "private_use_char_count": private_use_char_count,
+    }
+
+
+def get_u72xx_text_signal_pdfium(pdf_doc, page_indices):
+    """统计抽样页中 U+7280-U+72FF 字符占比，用于识别可疑 ToUnicode 映射。"""
+    cjk_chars = 0
+    u72xx_count = 0
+
+    for page_index in page_indices:
+        page = pdf_doc[page_index]
+        text_page = page.get_textpage()
+        text = text_page.get_text_bounded()
+        cleaned_text = re.sub(r"\s+", "", text)
+
+        for char in cleaned_text:
+            unicode_code = ord(char)
+            if 0x4E00 <= unicode_code <= 0x9FFF:
+                cjk_chars += 1
+            if (
+                SUSPICIOUS_CJK_72XX_START
+                <= unicode_code
+                <= SUSPICIOUS_CJK_72XX_END
+            ):
+                u72xx_count += 1
+
+    u72xx_cjk_ratio = 0.0
+    if cjk_chars > 0:
+        u72xx_cjk_ratio = u72xx_count / cjk_chars
+
+    return {
+        "cjk_chars": cjk_chars,
+        "u72xx_count": u72xx_count,
+        "u72xx_cjk_ratio": u72xx_cjk_ratio,
     }
 
 
