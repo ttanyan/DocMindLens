@@ -34,9 +34,12 @@ TEXT_QUALITY_BAD_THRESHOLD = 0.03
 TEXT_QUALITY_GOOD_THRESHOLD = 0.005
 MAX_PAGE_ASPECT_RATIO = 10.0
 SUSPICIOUS_CJK_72XX_START = 0x7280
-SUSPICIOUS_CJK_72XX_END = 0x72FF
+SUSPICIOUS_CJK_72XX_END = 0x72DF
 SUSPICIOUS_CJK_72XX_COUNT_THRESHOLD = 30
-SUSPICIOUS_CJK_72XX_CJK_RATIO_THRESHOLD = 0.03
+SUSPICIOUS_CJK_72XX_CJK_RATIO_THRESHOLD = 0.026
+SUSPICIOUS_CJK_72XX_WHITELIST = set(
+    "犀犁犄犊犒犟犬犯状犷犹狂狄狈狐狗狙狞"
+)
 ASCII_PUNCT_CHARS = set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 ASCII_PUNCT_RUN_MIN_LENGTH = 4
 SUSPICIOUS_ASCII_PUNCT_MIN_TEXT_CHARS = 100
@@ -151,7 +154,7 @@ def classify_hybrid(pdf_bytes):
                 >= SUSPICIOUS_CJK_72XX_CJK_RATIO_THRESHOLD
             ):
                 logger.debug(
-                    "Classify PDF as OCR due to suspicious U+7280-U+72FF text: "
+                    "Classify PDF as OCR due to suspicious U+7280-U+72DF text: "
                     f"count={u72xx_signal['u72xx_count']}, "
                     f"cjk_ratio={u72xx_signal['u72xx_cjk_ratio']:.4f}"
                 )
@@ -387,7 +390,7 @@ def get_text_quality_signal_pdfium(pdf_doc, page_indices):
 
 
 def _get_u72xx_text_signal_from_samples(text_samples):
-    """基于已缓存的抽样页文本统计 U+7280-U+72FF 字符占比。"""
+    """基于已缓存的抽样页文本统计扣除常用字后的 U+7280-U+72DF 字符占比。"""
     cjk_chars = 0
     u72xx_count = 0
 
@@ -400,6 +403,7 @@ def _get_u72xx_text_signal_from_samples(text_samples):
                 SUSPICIOUS_CJK_72XX_START
                 <= unicode_code
                 <= SUSPICIOUS_CJK_72XX_END
+                and char not in SUSPICIOUS_CJK_72XX_WHITELIST
             ):
                 u72xx_count += 1
 
@@ -415,7 +419,7 @@ def _get_u72xx_text_signal_from_samples(text_samples):
 
 
 def get_u72xx_text_signal_pdfium(pdf_doc, page_indices):
-    """统计抽样页中 U+7280-U+72FF 字符占比，用于识别可疑 ToUnicode 映射。"""
+    """统计抽样页中扣除常用字后的 U+7280-U+72DF 字符占比，用于识别可疑 ToUnicode 映射。"""
     text_samples = _collect_pdfium_text_samples(pdf_doc, page_indices)
     return _get_u72xx_text_signal_from_samples(text_samples)
 
