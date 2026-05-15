@@ -117,16 +117,17 @@ def classify_hybrid(pdf_bytes):
                 )
                 return "ocr"
 
-            if (
-                get_avg_cleaned_chars_per_page_pdfium(pdf, page_indices)
-                < CHARS_THRESHOLD
-            ):
+            text_samples = _collect_pdfium_text_samples(pdf, page_indices)
+            avg_cleaned_chars_per_page = _get_avg_cleaned_chars_per_page_from_samples(
+                text_samples
+            )
+            if avg_cleaned_chars_per_page < CHARS_THRESHOLD:
                 return "ocr"
 
             if detect_cid_font_signal_pypdf(pdf_bytes, page_indices):
                 return "ocr"
 
-            text_quality_signal = get_text_quality_signal_pdfium(pdf, page_indices)
+            text_quality_signal = _get_text_quality_signal_from_samples(text_samples)
             total_chars = text_quality_signal["total_chars"]
             abnormal_ratio = text_quality_signal["abnormal_ratio"]
 
@@ -137,7 +138,7 @@ def classify_hybrid(pdf_bytes):
             else:
                 should_run_pdfminer_fallback = True
 
-            u72xx_signal = get_u72xx_text_signal_pdfium(pdf, page_indices)
+            u72xx_signal = _get_u72xx_text_signal_from_samples(text_samples)
             if (
                 u72xx_signal["u72xx_count"]
                 >= SUSPICIOUS_CJK_72XX_COUNT_THRESHOLD
@@ -278,30 +279,52 @@ def get_avg_cleaned_chars_per_page(pdf_doc, pages_to_check):
     return avg_cleaned_chars_per_page
 
 
-def get_avg_cleaned_chars_per_page_pdfium(pdf_doc, page_indices):
-    cleaned_total_chars = 0
+def _collect_pdfium_text_samples(pdf_doc, page_indices):
+    """一次性收集抽样页的 textpage 和文本，避免分类链路重复读取 PDFium 文本。"""
+    text_samples = []
 
     for page_index in page_indices:
         page = pdf_doc[page_index]
         text_page = page.get_textpage()
         text = text_page.get_text_bounded()
-        cleaned_total_chars += len(re.sub(r"\s+", "", text))
+        text_samples.append(
+            {
+                "text_page": text_page,
+                "text": text,
+                "cleaned_text": re.sub(r"\s+", "", text),
+            }
+        )
 
-    if not page_indices:
+    return text_samples
+
+
+def _get_avg_cleaned_chars_per_page_from_samples(text_samples):
+    """基于已缓存的抽样页文本计算平均有效字符数。"""
+    cleaned_total_chars = 0
+
+    for text_sample in text_samples:
+        cleaned_total_chars += len(text_sample["cleaned_text"])
+
+    if not text_samples:
         return 0.0
-    return cleaned_total_chars / len(page_indices)
+    return cleaned_total_chars / len(text_samples)
 
 
-def get_text_quality_signal_pdfium(pdf_doc, page_indices):
+def get_avg_cleaned_chars_per_page_pdfium(pdf_doc, page_indices):
+    text_samples = _collect_pdfium_text_samples(pdf_doc, page_indices)
+    return _get_avg_cleaned_chars_per_page_from_samples(text_samples)
+
+
+def _get_text_quality_signal_from_samples(text_samples):
+    """基于已缓存的 PDFium textpage 统计异常字符质量信号。"""
     total_chars = 0
     null_char_count = 0
     replacement_char_count = 0
     control_char_count = 0
     private_use_char_count = 0
 
-    for page_index in page_indices:
-        page = pdf_doc[page_index]
-        text_page = page.get_textpage()
+    for text_sample in text_samples:
+        text_page = text_sample["text_page"]
         char_count = text_page.count_chars()
         total_chars += char_count
 
@@ -337,18 +360,18 @@ def get_text_quality_signal_pdfium(pdf_doc, page_indices):
     }
 
 
-def get_u72xx_text_signal_pdfium(pdf_doc, page_indices):
-    """统计抽样页中 U+7280-U+72FF 字符占比，用于识别可疑 ToUnicode 映射。"""
+def get_text_quality_signal_pdfium(pdf_doc, page_indices):
+    text_samples = _collect_pdfium_text_samples(pdf_doc, page_indices)
+    return _get_text_quality_signal_from_samples(text_samples)
+
+
+def _get_u72xx_text_signal_from_samples(text_samples):
+    """基于已缓存的抽样页文本统计 U+7280-U+72FF 字符占比。"""
     cjk_chars = 0
     u72xx_count = 0
 
-    for page_index in page_indices:
-        page = pdf_doc[page_index]
-        text_page = page.get_textpage()
-        text = text_page.get_text_bounded()
-        cleaned_text = re.sub(r"\s+", "", text)
-
-        for char in cleaned_text:
+    for text_sample in text_samples:
+        for char in text_sample["cleaned_text"]:
             unicode_code = ord(char)
             if 0x4E00 <= unicode_code <= 0x9FFF:
                 cjk_chars += 1
@@ -368,6 +391,12 @@ def get_u72xx_text_signal_pdfium(pdf_doc, page_indices):
         "u72xx_count": u72xx_count,
         "u72xx_cjk_ratio": u72xx_cjk_ratio,
     }
+
+
+def get_u72xx_text_signal_pdfium(pdf_doc, page_indices):
+    """统计抽样页中 U+7280-U+72FF 字符占比，用于识别可疑 ToUnicode 映射。"""
+    text_samples = _collect_pdfium_text_samples(pdf_doc, page_indices)
+    return _get_u72xx_text_signal_from_samples(text_samples)
 
 
 def detect_cid_font_signal_pypdf(pdf_bytes, page_indices):
