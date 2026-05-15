@@ -37,6 +37,11 @@ SUSPICIOUS_CJK_72XX_START = 0x7280
 SUSPICIOUS_CJK_72XX_END = 0x72FF
 SUSPICIOUS_CJK_72XX_COUNT_THRESHOLD = 30
 SUSPICIOUS_CJK_72XX_CJK_RATIO_THRESHOLD = 0.03
+ASCII_PUNCT_CHARS = set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+ASCII_PUNCT_RUN_MIN_LENGTH = 4
+SUSPICIOUS_ASCII_PUNCT_MIN_TEXT_CHARS = 100
+SUSPICIOUS_ASCII_PUNCT_RATIO_THRESHOLD = 0.25
+SUSPICIOUS_ASCII_PUNCT_RUN_RATIO_THRESHOLD = 0.10
 
 _ALLOWED_CONTROL_CODES = {9, 10, 13}
 _PRIVATE_USE_AREA_START = 0xE000
@@ -149,6 +154,21 @@ def classify_hybrid(pdf_bytes):
                     "Classify PDF as OCR due to suspicious U+7280-U+72FF text: "
                     f"count={u72xx_signal['u72xx_count']}, "
                     f"cjk_ratio={u72xx_signal['u72xx_cjk_ratio']:.4f}"
+                )
+                return "ocr"
+
+            ascii_punct_signal = _get_boundary_ascii_punct_signal_from_samples(
+                text_samples,
+                page_count,
+            )
+            if ascii_punct_signal["triggered"]:
+                logger.debug(
+                    "Classify PDF as OCR due to suspicious boundary ASCII punctuation "
+                    f"text: page={ascii_punct_signal['page_index'] + 1}, "
+                    f"text_chars={ascii_punct_signal['cleaned_text_chars']}, "
+                    f"ascii_punct_ratio="
+                    f"{ascii_punct_signal['ascii_punct_ratio']:.4f}, "
+                    f"punct_run_ratio={ascii_punct_signal['punct_run_ratio']:.4f}"
                 )
                 return "ocr"
 
@@ -289,6 +309,7 @@ def _collect_pdfium_text_samples(pdf_doc, page_indices):
         text = text_page.get_text_bounded()
         text_samples.append(
             {
+                "page_index": page_index,
                 "text_page": text_page,
                 "text": text,
                 "cleaned_text": re.sub(r"\s+", "", text),
@@ -397,6 +418,92 @@ def get_u72xx_text_signal_pdfium(pdf_doc, page_indices):
     """统计抽样页中 U+7280-U+72FF 字符占比，用于识别可疑 ToUnicode 映射。"""
     text_samples = _collect_pdfium_text_samples(pdf_doc, page_indices)
     return _get_u72xx_text_signal_from_samples(text_samples)
+
+
+def _count_ascii_punct_run_chars(text: str) -> int:
+    """统计连续 ASCII 标点字符数，仅累计长度达到阈值的 run。"""
+    run_chars = 0
+    current_run = 0
+
+    for char in text:
+        if char in ASCII_PUNCT_CHARS:
+            current_run += 1
+            continue
+
+        if current_run >= ASCII_PUNCT_RUN_MIN_LENGTH:
+            run_chars += current_run
+        current_run = 0
+
+    if current_run >= ASCII_PUNCT_RUN_MIN_LENGTH:
+        run_chars += current_run
+
+    return run_chars
+
+
+def _get_boundary_ascii_punct_signal_from_samples(text_samples, page_count: int):
+    """只检查首页和末页的 ASCII 标点密集度，用于识别无 ToUnicode 的乱码文本。"""
+    boundary_page_indices = {0}
+    if page_count > 1:
+        boundary_page_indices.add(page_count - 1)
+
+    best_signal = {
+        "triggered": False,
+        "page_index": None,
+        "cleaned_text_chars": 0,
+        "ascii_punct_count": 0,
+        "ascii_punct_ratio": 0.0,
+        "ascii_punct_run_chars": 0,
+        "punct_run_ratio": 0.0,
+    }
+
+    for text_sample in text_samples:
+        page_index = text_sample.get("page_index")
+        if page_index not in boundary_page_indices:
+            continue
+
+        cleaned_text = text_sample["cleaned_text"]
+        cleaned_text_chars = len(cleaned_text)
+        ascii_punct_count = sum(
+            1 for char in cleaned_text if char in ASCII_PUNCT_CHARS
+        )
+        ascii_punct_run_chars = _count_ascii_punct_run_chars(cleaned_text)
+
+        ascii_punct_ratio = 0.0
+        punct_run_ratio = 0.0
+        if cleaned_text_chars > 0:
+            ascii_punct_ratio = ascii_punct_count / cleaned_text_chars
+            punct_run_ratio = ascii_punct_run_chars / cleaned_text_chars
+
+        signal = {
+            "triggered": False,
+            "page_index": page_index,
+            "cleaned_text_chars": cleaned_text_chars,
+            "ascii_punct_count": ascii_punct_count,
+            "ascii_punct_ratio": ascii_punct_ratio,
+            "ascii_punct_run_chars": ascii_punct_run_chars,
+            "punct_run_ratio": punct_run_ratio,
+        }
+        if (
+            cleaned_text_chars >= SUSPICIOUS_ASCII_PUNCT_MIN_TEXT_CHARS
+            and ascii_punct_ratio >= SUSPICIOUS_ASCII_PUNCT_RATIO_THRESHOLD
+            and punct_run_ratio >= SUSPICIOUS_ASCII_PUNCT_RUN_RATIO_THRESHOLD
+        ):
+            signal["triggered"] = True
+            return signal
+
+        # 未触发时保留最可疑的边界页指标，方便日志扩展和后续排查阈值边界。
+        if (
+            signal["punct_run_ratio"],
+            signal["ascii_punct_ratio"],
+            signal["cleaned_text_chars"],
+        ) > (
+            best_signal["punct_run_ratio"],
+            best_signal["ascii_punct_ratio"],
+            best_signal["cleaned_text_chars"],
+        ):
+            best_signal = signal
+
+    return best_signal
 
 
 def detect_cid_font_signal_pypdf(pdf_bytes, page_indices):
