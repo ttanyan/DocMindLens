@@ -1,0 +1,417 @@
+[
+    [
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "案例 24. 减轻处罚——未满 16 周岁"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                228,
+                109,
+                508,
+                139
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "一、基本案情"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                224,
+                159,
+                308,
+                184
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2018年8月×日，当事人李某持《港澳居民来往内地通行证》从皇岗口岸入境大厅入境，未向海关书面申报，经检查，在当事人随身携带的行李内发现有化妆品14件，被查获。"
+                    }
+                ]
+            },
+            "bbox": [
+                200,
+                189,
+                543,
+                283
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "二、案件办理分析"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                228,
+                293,
+                336,
+                313
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "（一）定性判断。"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                231,
+                323,
+                329,
+                348
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "首先，当事人携带应当申报物品进境未申股，其行为已经违反海关规定，属于违法。其次，从查获情况看，本案当事人携带方式属于正常携带，在现有证据材料的基础上，没有具体行为情节及证据可以证明当事人存在故意诚盗、骗私等逃避海关监管的主观意图；同时没有被海关征税、退运、移送缉私的记录，综合以上，依据法律法规规定，当事人的行为应当定性为违规。"
+                    }
+                ]
+            },
+            "bbox": [
+                203,
+                353,
+                543,
+                577
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "认定依据："
+                    }
+                ]
+            },
+            "bbox": [
+                231,
+                587,
+                291,
+                611
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "《处罚实施条例》第十二条规定“违反海关法及其他有关法律、行政法规和规章但不构成走私行为的，是违反海关监管规定的行为”。"
+                    }
+                ]
+            },
+            "bbox": [
+                207,
+                616,
+                543,
+                706
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "走私行为的判定："
+                    }
+                ]
+            },
+            "bbox": [
+                231,
+                716,
+                333,
+                736
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1.《海关法》第八十二条规定“有下列情形之一的，无走私行为：（一）运输、携带、邮寄国家禁止或者限制进出口货物、物品或者依法应当缴纳税款的货物、物品进出废的；……”。"
+                    }
+                ]
+            },
+            "bbox": [
+                207,
+                746,
+                543,
+                870
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2.《处罚实施条例》第七条(二)项规定“经过设立海关网"
+                    }
+                ]
+            },
+            "bbox": [
+                231,
+                870,
+                540,
+                900
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "地点，以液匯、伪装、瞒报、伪报或者其他方式逃避海关监管，运输、携带、邮寄国家禁止或者限制进出境的货物、物品或者依法应当缴纳税款的货物、物品进出境的”。"
+                    }
+                ]
+            },
+            "bbox": [
+                568,
+                114,
+                908,
+                208
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3.《两简案件操作办法》第十九条规定“当事人运输、携带、邮寄禁止或者限制进出境的货物物品或者应税货物物品进出境，有下列行为之一的，定性走私行为：（一）当事人以藏藻、伪装等方式逃避海关监管的……"
+                    }
+                ]
+            },
+            "bbox": [
+                564,
+                213,
+                905,
+                338
+            ]
+        },
+        {
+            "type": "title",
+            "content": {
+                "title_content": [
+                    {
+                        "type": "text",
+                        "content": "（二）案值认定。"
+                    }
+                ],
+                "level": 1
+            },
+            "bbox": [
+                592,
+                338,
+                687,
+                363
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "本案中，在扣涉案标的物共14件，且无相同物品，应当以“物品”计核税款。根据当事人提供的购买凭证，结合违法物品的数量及完税价格，进而计算出案值及税款。经计核，14件物品共计0.77万元，税款0.15万元。因此，本案案值0.92万元。"
+                    }
+                ]
+            },
+            "bbox": [
+                564,
+                373,
+                901,
+                527
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "判断依据："
+                    }
+                ]
+            },
+            "bbox": [
+                585,
+                537,
+                642,
+                557
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "1.“货物”、“物品”的区分，根据《处罚实施条例》第六十四条规定“‘物品’，指个人以运输、携带等方式进出境的行李物品、邮寄进出境的物品，包括货币、金银等。超出自用、合理数量的，视为货物”。"
+                    }
+                ]
+            },
+            "bbox": [
+                561,
+                567,
+                898,
+                691
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "2.《快办系统应用配套制度》“涉案货物、物品区分原则”规定“同类物品数量明显不合理（超过20件）的视为货物”"
+                    }
+                ]
+            },
+            "bbox": [
+                561,
+                696,
+                894,
+                761
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "3.《计核走私偷逃税款办法》第十六条规定“涉嫌走私的货物能够确定成交价格的，其计税价格应当以该货物的成交价格为基础审核确定”。"
+                    }
+                ]
+            },
+            "bbox": [
+                561,
+                761,
+                894,
+                850
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": {
+                "paragraph_content": [
+                    {
+                        "type": "text",
+                        "content": "4.《计核走私偷逃税款办法》第二十七条规定“对于涉"
+                    }
+                ]
+            },
+            "bbox": [
+                582,
+                855,
+                891,
+                890
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "上篇 旅投案例"
+                    }
+                ]
+            },
+            "bbox": [
+                203,
+                54,
+                277,
+                74
+            ]
+        },
+        {
+            "type": "page_header",
+            "content": {
+                "page_header_content": [
+                    {
+                        "type": "text",
+                        "content": "第四章 旅检特殊处罚情节类案例"
+                    }
+                ]
+            },
+            "bbox": [
+                740,
+                69,
+                908,
+                94
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "104 "
+                    }
+                ]
+            },
+            "bbox": [
+                375,
+                920,
+                385,
+                935
+            ]
+        },
+        {
+            "type": "page_number",
+            "content": {
+                "page_number_content": [
+                    {
+                        "type": "text",
+                        "content": "105 "
+                    }
+                ]
+            },
+            "bbox": [
+                715,
+                930,
+                726,
+                940
+            ]
+        }
+    ]
+]

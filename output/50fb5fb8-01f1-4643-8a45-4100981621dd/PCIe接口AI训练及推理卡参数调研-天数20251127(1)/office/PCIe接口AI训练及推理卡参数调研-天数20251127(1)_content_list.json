@@ -1,0 +1,26 @@
+[
+    {
+        "type": "text",
+        "text": "在供产品调研",
+        "text_level": 1,
+        "page_idx": 0
+    },
+    {
+        "type": "table",
+        "table_caption": [],
+        "table_body": "<table>\n  <tr>\n    <th><p>厂商</p></th>\n    <th><p>型号</p></th>\n    <th><p>算力水平</p></th>\n    <th><p>制程</p></th>\n    <th><p>显存类型及容量</p></th>\n    <th><p>PCIe接口带宽</p></th>\n    <th><p>应用场景（训练、推理、训推一体...）</p></th>\n    <th><p>发布时间</p></th>\n    <th><p>EOL时间</p></th>\n  </tr>\n  <tr>\n    <td><p>上海天数智芯半导体有限公司</p></td>\n    <td><p>智铠100</p></td>\n    <td><p>192TLOPS@INT8；\n96TFLOPS@BF16；\n96TFLOPS@FP16；\n24TFLOPS@FP32；</p></td>\n    <td><p>7nm</p></td>\n    <td><p>HBM2e,32GB</p></td>\n    <td><p>Pcie4.0，64GB/s</p></td>\n    <td><p>推理</p></td>\n    <td><p>44743</p></td>\n    <td><p>未定</p></td>\n  </tr>\n  <tr>\n    <td><p>上海天数智芯半导体有限公司</p></td>\n    <td><p>智凯100DUO</p></td>\n    <td><p>384TLOPS@INT8；\n192TFLOPS@BF16；\n192TFLOPS@FP16；\n48TFLOPS@FP32；</p></td>\n    <td><p>7nm</p></td>\n    <td><p>HBM2e64GB</p></td>\n    <td><p>Pcie4.0，64GB/s</p></td>\n    <td><p>推理</p></td>\n    <td><p>45505</p></td>\n    <td><p>未定</p></td>\n  </tr>\n  <tr>\n    <td><p>上海天数智芯半导体有限公司</p></td>\n    <td><p>天垓150S</p></td>\n    <td><p>384TLOPS@INT8；\n224TFLOPS@BF16；\n224TFLOPS@FP16；\n56TFLOPS@FP32；</p></td>\n    <td><p>7nm</p></td>\n    <td><p>HBM2e,64GB</p></td>\n    <td><p>Pcie4.0，64GB/s</p></td>\n    <td><p>训推一体.</p></td>\n    <td><p>45261</p></td>\n    <td><p>未定</p></td>\n  </tr>\n</table>",
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "下一代产品调研",
+        "text_level": 1,
+        "page_idx": 1
+    },
+    {
+        "type": "table",
+        "table_caption": [],
+        "table_body": "<table>\n  <tr>\n    <th><p>厂商</p></th>\n    <th><p>型号</p></th>\n    <th><p>算力水平</p></th>\n    <th><p>制程</p></th>\n    <th><p>显存类型及容量</p></th>\n    <th><p>PCIe接口带宽</p></th>\n    <th><p>应用场景（训练、推理、训推一体...）</p></th>\n    <th><p>预计发布时间</p></th>\n  </tr>\n  <tr>\n    <td><p>上海天数智芯半导体有限公司</p></td>\n    <td><p>智铠210</p></td>\n    <td><p>FP16 320T\nFP8 640T</p></td>\n    <td><p>7nm</p></td>\n    <td><p>HBM3、72GB</p></td>\n    <td><p>PCIE 5.0，卡间互联385GB/s</p></td>\n    <td><p>主要推理，可以训练</p></td>\n    <td><p>26年Q1</p></td>\n  </tr>\n  <tr>\n    <td><p>上海天数智芯半导体有限公司</p></td>\n    <td><p>天垓260</p></td>\n    <td><p>FP16 480T\nFP8 960T</p></td>\n    <td><p>7nm</p></td>\n    <td><p>HBM3、144GB</p></td>\n    <td><p>PCIE 5.0，卡间互联768 GB/s</p></td>\n    <td><p>训推一体</p></td>\n    <td><p>26年Q2</p></td>\n  </tr>\n</table>",
+        "page_idx": 1
+    }
+]

@@ -54,6 +54,3 @@ debug_utils/
 
 # sphinx docs
 _build/
-
-
-output/
