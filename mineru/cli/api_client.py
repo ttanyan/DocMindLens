@@ -170,7 +170,7 @@ def _signal_process_tree_pid(process_group_id: int, *, force: bool) -> None:
             )
         except Exception as exc:
             logger.debug(
-                "Failed to signal managed MinerU process tree {} on Windows: {}",
+                "Failed to signal managed LinkCell process tree {} on Windows: {}",
                 process_group_id,
                 exc,
             )
@@ -183,7 +183,7 @@ def _signal_process_tree_pid(process_group_id: int, *, force: bool) -> None:
         return
     except OSError as exc:
         logger.debug(
-            "Failed to signal managed MinerU process group {}: {}",
+            "Failed to signal managed LinkCell process group {}: {}",
             process_group_id,
             exc,
         )
@@ -249,7 +249,7 @@ def stop_managed_process(
             exited_via_stdin_eof = True
         except subprocess.TimeoutExpired:
             logger.debug(
-                "Managed MinerU process did not stop after stdin EOF within {}s. Falling back to process-tree termination.",
+                "Managed LinkCell process did not stop after stdin EOF within {}s. Falling back to process-tree termination.",
                 shutdown_timeout_seconds,
             )
 
@@ -268,7 +268,7 @@ def stop_managed_process(
             process.wait(timeout=shutdown_timeout_seconds)
         except subprocess.TimeoutExpired:
             logger.warning(
-                "Managed MinerU process {} did not exit after forceful stop.",
+                "Managed LinkCell process {} did not exit after forceful stop.",
                 process.pid,
             )
 
@@ -331,7 +331,7 @@ def _stop_spawn_managed_process(
 
         if process.exitcode is None:
             logger.warning(
-                "Managed MinerU spawn process {} did not exit after forceful stop.",
+                "Managed LinkCell spawn process {} did not exit after forceful stop.",
                 process.pid,
             )
         return
@@ -346,7 +346,7 @@ def _stop_spawn_managed_process(
         process.join(timeout=shutdown_timeout_seconds)
         if process.exitcode is None:
             logger.warning(
-                "Managed MinerU spawn process {} did not exit after forceful stop.",
+                "Managed LinkCell spawn process {} did not exit after forceful stop.",
                 process.pid,
             )
 
@@ -588,7 +588,7 @@ class LocalAPIServer:
 
         if last_error is not None:
             logger.warning(
-                "Failed to clean up temporary MinerU API directory {}: {}. "
+                "Failed to clean up temporary LinkCell API directory {}: {}. "
                 "You can remove it manually after processes release any open handles.",
                 self.temp_root,
                 last_error,
@@ -729,13 +729,13 @@ def validate_server_health_payload(payload: dict, base_url: str) -> ServerHealth
     status = payload.get("status")
     if status != "healthy":
         raise click.ClickException(
-            f"MinerU API at {base_url} is not healthy: {json.dumps(payload, ensure_ascii=False)}"
+            f"LinkCell API at {base_url} is not healthy: {json.dumps(payload, ensure_ascii=False)}"
         )
 
     protocol_version = payload.get("protocol_version")
     if protocol_version != API_PROTOCOL_VERSION:
         raise click.ClickException(
-            f"MinerU API at {base_url} returned protocol_version={protocol_version}, "
+            f"LinkCell API at {base_url} returned protocol_version={protocol_version}, "
             f"expected {API_PROTOCOL_VERSION}"
         )
 
@@ -743,11 +743,11 @@ def validate_server_health_payload(payload: dict, base_url: str) -> ServerHealth
     processing_window_size = payload.get("processing_window_size")
     if not isinstance(max_concurrent_requests, int) or max_concurrent_requests <= 0:
         raise click.ClickException(
-            f"MinerU API at {base_url} did not return a valid positive max_concurrent_requests"
+            f"LinkCell API at {base_url} did not return a valid positive max_concurrent_requests"
         )
     if not isinstance(processing_window_size, int):
         raise click.ClickException(
-            f"MinerU API at {base_url} did not return a valid processing_window_size"
+            f"LinkCell API at {base_url} did not return a valid processing_window_size"
         )
 
     return ServerHealth(
@@ -764,7 +764,7 @@ async def fetch_server_health(
     response = await client.get(f"{base_url}{HEALTH_ENDPOINT}")
     if response.status_code != 200:
         raise click.ClickException(
-            f"Failed to query MinerU API health from {base_url}: "
+            f"Failed to query LinkCell API health from {base_url}: "
             f"{response.status_code} {response_detail(response)}"
         )
     return validate_server_health_payload(response.json(), base_url)
@@ -911,7 +911,7 @@ def submit_parse_task_sync(
         or not isinstance(status_url, str)
         or not isinstance(result_url, str)
     ):
-        raise click.ClickException("MinerU API returned an invalid task payload")
+        raise click.ClickException("LinkCell API returned an invalid task payload")
 
     normalized_file_names: tuple[str, ...] = ()
     if isinstance(file_names, list) and all(isinstance(name, str) for name in file_names):

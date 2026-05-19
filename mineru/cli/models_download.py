@@ -142,7 +142,7 @@ def temporary_model_source(model_source):
     default=None,
 )
 def download_models(model_source, model_type):
-    """Download MinerU model files.
+    """Download LinkCell model files.
 
     Supports downloading pipeline or VLM models from ModelScope or HuggingFace.
     """

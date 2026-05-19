@@ -266,7 +266,7 @@ def build_table_state_from_html(
     html: str,
     max_header_rows: int = MAX_HEADER_ROWS,
 ) -> TableMergeState | None:
-    """从原始 HTML 构建 TableMergeState，不依赖 MinerU block 结构。
+    """从原始 HTML 构建 TableMergeState，不依赖 LinkCell block 结构。
 
     供外部工具（如 mineru-vl-utils）调用，用于跨页表格结构检测。
     返回的 state 仅可用于 can_merge_by_structure()，不可传入 can_merge_tables()。

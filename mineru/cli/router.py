@@ -58,10 +58,10 @@ TASK_FAILED = "failed"
 TASK_TERMINAL_STATES = {TASK_COMPLETED, TASK_FAILED}
 DEFAULT_TASK_RETENTION_SECONDS = 24 * 60 * 60
 DEFAULT_TASK_CLEANUP_INTERVAL_SECONDS = 5 * 60
-FILE_PARSE_TASK_ID_HEADER = "X-MinerU-Task-Id"
-FILE_PARSE_TASK_STATUS_HEADER = "X-MinerU-Task-Status"
-FILE_PARSE_TASK_STATUS_URL_HEADER = "X-MinerU-Task-Status-Url"
-FILE_PARSE_TASK_RESULT_URL_HEADER = "X-MinerU-Task-Result-Url"
+FILE_PARSE_TASK_ID_HEADER = "X-LinkCell-Task-Id"
+FILE_PARSE_TASK_STATUS_HEADER = "X-LinkCell-Task-Status"
+FILE_PARSE_TASK_STATUS_URL_HEADER = "X-LinkCell-Task-Status-Url"
+FILE_PARSE_TASK_RESULT_URL_HEADER = "X-LinkCell-Task-Result-Url"
 HEALTH_ENDPOINT = "/health"
 TASKS_ENDPOINT = "/tasks"
 SOURCE_LOCAL = "local"
@@ -824,7 +824,7 @@ class WorkerPool:
             "servers": servers,
         }
         if not healthy_servers:
-            payload["error"] = "No healthy upstream MinerU API servers are available"
+            payload["error"] = "No healthy upstream LinkCell API servers are available"
         return bool(healthy_servers), payload
 
 
@@ -998,7 +998,7 @@ async def startup_router_state(app: FastAPI, settings: RouterSettings) -> None:
             raise RuntimeError(
                 payload.get(
                     "error",
-                    "No healthy upstream MinerU API servers are available",
+                    "No healthy upstream LinkCell API servers are available",
                 )
             )
     except Exception:
@@ -1093,15 +1093,15 @@ async def stage_multipart_request(request: Request) -> MultipartPayload:
 
 def parse_submit_response(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        raise ValueError("MinerU upstream returned an invalid submit payload")
+        raise ValueError("LinkCell upstream returned an invalid submit payload")
     task_id = payload.get("task_id")
     status = payload.get("status")
     backend = payload.get("backend")
     created_at = payload.get("created_at")
     if not isinstance(task_id, str) or not isinstance(status, str) or not isinstance(backend, str):
-        raise ValueError("MinerU upstream returned an invalid submit payload")
+        raise ValueError("LinkCell upstream returned an invalid submit payload")
     if created_at is not None and not isinstance(created_at, str):
-        raise ValueError("MinerU upstream returned an invalid submit payload")
+        raise ValueError("LinkCell upstream returned an invalid submit payload")
     return {
         "task_id": task_id,
         "status": status,
@@ -1194,7 +1194,7 @@ async def submit_router_task(
         server = await worker_pool.acquire_submission_server(excluded_server_ids=attempted_servers)
         if server is None:
             if last_error is None:
-                raise HTTPException(status_code=503, detail="No healthy upstream MinerU API servers are available")
+                raise HTTPException(status_code=503, detail="No healthy upstream LinkCell API servers are available")
             raise HTTPException(status_code=503, detail=last_error)
 
         try:
@@ -1458,6 +1458,12 @@ def create_app(settings: RouterSettings | None = None) -> FastAPI:
     @app.post(path="/tasks", status_code=202)
     async def submit_parse_task(http_request: Request):
         payload = await stage_multipart_request(http_request)
+        field_dict = {k: v for k, v in payload.fields}
+        logger.info(
+            "Router received parse task request | fields={} | files={}",
+            field_dict,
+            [u.upload_name for u in payload.uploads],
+        )
         try:
             router_task = await submit_router_task(http_request, payload)
         finally:
@@ -1554,7 +1560,7 @@ app = create_app()
     "--upstream-url",
     "upstream_urls",
     multiple=True,
-    help="Existing MinerU FastAPI base URL. Repeat to add multiple upstream servers.",
+    help="Existing LinkCell FastAPI base URL. Repeat to add multiple upstream servers.",
 )
 @click.option(
     "--local-gpus",
@@ -1616,7 +1622,7 @@ def main(
     warn_if_public_http_client_policy(host, allow_public_http_client)
 
     access_log = not env_flag_enabled("MINERU_API_DISABLE_ACCESS_LOG")
-    print(f"Start MinerU Router Service: http://{host}:{port}")
+    print(f"Start LinkCell Router Service: http://{host}:{port}")
     print(f"API documentation: http://{host}:{port}/docs")
 
     if reload:

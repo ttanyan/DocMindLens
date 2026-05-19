@@ -1,9 +1,12 @@
 # Copyright (c) Opendatalab. All rights reserved.
 import asyncio
+import io
+import json
 import mimetypes
 import multiprocessing
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -27,8 +30,10 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from loguru import logger
 
 from base64 import b64encode
@@ -87,10 +92,10 @@ DEFAULT_TASK_RETENTION_SECONDS = 24 * 60 * 60
 DEFAULT_TASK_CLEANUP_INTERVAL_SECONDS = 5 * 60
 DEFAULT_OUTPUT_ROOT = "./output"
 ALLOWED_PARSE_METHODS = {"auto", "txt", "ocr"}
-FILE_PARSE_TASK_ID_HEADER = "X-MinerU-Task-Id"
-FILE_PARSE_TASK_STATUS_HEADER = "X-MinerU-Task-Status"
-FILE_PARSE_TASK_STATUS_URL_HEADER = "X-MinerU-Task-Status-Url"
-FILE_PARSE_TASK_RESULT_URL_HEADER = "X-MinerU-Task-Result-Url"
+FILE_PARSE_TASK_ID_HEADER = "X-LinkCell-Task-Id"
+FILE_PARSE_TASK_STATUS_HEADER = "X-LinkCell-Task-Status"
+FILE_PARSE_TASK_STATUS_URL_HEADER = "X-LinkCell-Task-Status-Url"
+FILE_PARSE_TASK_RESULT_URL_HEADER = "X-LinkCell-Task-Result-Url"
 MINERU_API_PUBLIC_BIND_EXPOSED_ENV = "MINERU_API_PUBLIC_BIND_EXPOSED"
 MINERU_API_ALLOW_PUBLIC_HTTP_CLIENT_ENV = "MINERU_API_ALLOW_PUBLIC_HTTP_CLIENT"
 SWAGGER_UI_FILE_ARRAY_SCHEMA_EXTRA = {
@@ -235,6 +240,33 @@ async def lifespan(app: FastAPI):
         await shutdown_app_state(app)
 
 
+_SETTINGS_DB_PATH = os.path.join(
+    os.environ.get("MINERU_API_OUTPUT_ROOT", "./output"), ".mineru_settings.db"
+)
+
+
+def _init_settings_db(app: FastAPI) -> None:
+    db_dir = os.path.dirname(_SETTINGS_DB_PATH)
+    os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(_SETTINGS_DB_PATH)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ai_settings ("
+        "  key TEXT PRIMARY KEY,"
+        "  value TEXT NOT NULL"
+        ")"
+    )
+    conn.commit()
+    conn.close()
+    app.state.settings_db_path = _SETTINGS_DB_PATH
+
+
+def _get_settings_db() -> sqlite3.Connection:
+    db_path = getattr(app.state, "settings_db_path", _SETTINGS_DB_PATH)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def create_app():
     # By default, the OpenAPI documentation endpoints (openapi_url, docs_url, redoc_url) are enabled.
     # To disable the FastAPI docs and schema endpoints, set the environment variable MINERU_API_ENABLE_FASTAPI_DOCS=0.
@@ -261,7 +293,20 @@ def create_app():
     if is_main_multiprocessing_process():
         logger.info(f"Request concurrency limited to {max_concurrent_requests}")
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+    
+    output_root = os.environ.get('MINERU_API_OUTPUT_ROOT', './output')
+    app.mount('/static/output', StaticFiles(directory=output_root), name='output')
+    
+    upload_root = os.environ.get('MINERU_API_OUTPUT_ROOT', './output')
+    app.mount('/static/uploads', StaticFiles(directory=upload_root), name='uploads')
     app.state.public_bind_exposed = env_flag_enabled(
         MINERU_API_PUBLIC_BIND_EXPOSED_ENV,
         default=False,
@@ -281,6 +326,9 @@ def create_app():
     app.state.service_config = default_service_config
     app.state.config = default_model_config
     app.state.task_manager = None
+
+    _init_settings_db(app)
+
     return app
 
 
@@ -1464,6 +1512,28 @@ async def submit_parse_task(
         ParseRequestOptions, Depends(parse_request_form)
     ],
 ):
+    logger.info(
+        "Received parse task request | "
+        "backend={} | parse_method={} | lang_list={} | "
+        "formula_enable={} | table_enable={} | image_analysis={} | "
+        "start_page_id={} | end_page_id={} | "
+        "return_md={} | return_content_list={} | return_images={} | "
+        "response_format_zip={} | server_url={} | files={}",
+        request_options.backend,
+        request_options.parse_method,
+        request_options.lang_list,
+        request_options.formula_enable,
+        request_options.table_enable,
+        request_options.image_analysis,
+        request_options.start_page_id,
+        request_options.end_page_id,
+        request_options.return_md,
+        request_options.return_content_list,
+        request_options.return_images,
+        request_options.response_format_zip,
+        request_options.server_url,
+        [f.filename for f in request_options.files],
+    )
     task_manager = get_task_manager()
     task = await create_async_parse_task(request_options)
     return build_task_submission_response(task, http_request, task_manager)
@@ -1476,6 +1546,32 @@ async def get_async_task_status(task_id: str, request: Request):
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task_manager.build_status_payload(task, request)
+
+
+@app.delete(path="/tasks/{task_id}", name="delete_async_task")
+async def delete_async_task(task_id: str):
+    task_manager = get_task_manager()
+    task = task_manager.get(task_id)
+
+    if task is not None:
+        if task.status == TASK_PROCESSING:
+            raise HTTPException(status_code=400, detail="Cannot delete a task that is currently processing")
+        task_manager.tasks.pop(task_id, None)
+        task_event = task_manager.task_events.pop(task_id, None)
+        if task_event is not None:
+            task_event.set()
+        cleanup_file(task.output_dir)
+        logger.info(f"Deleted task: {task_id}")
+        return JSONResponse(status_code=200, content={"message": "Task deleted successfully"})
+
+    output_root = get_output_root()
+    task_dir = output_root / task_id
+    if task_dir.exists() and task_dir.is_dir():
+        cleanup_file(str(task_dir))
+        logger.info(f"Deleted task from disk: {task_id}")
+        return JSONResponse(status_code=200, content={"message": "Task deleted successfully"})
+
+    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @app.get(path="/tasks/{task_id}/result", name="get_async_task_result")
@@ -1523,6 +1619,304 @@ async def get_async_task_result(
         return_original_file=task.return_original_file,
         zip_filename=f"{task.task_id}.zip",
     )
+
+
+@app.get(path="/api/list-output-files")
+async def list_output_files():
+    output_dir = Path("output")
+    files = []
+    
+    if output_dir.exists() and output_dir.is_dir():
+        for task_dir in output_dir.iterdir():
+            if task_dir.is_dir():
+                try:
+                    pdf_files = list(task_dir.rglob("uploads/*.pdf"))
+                    doc_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name != 'uploads']
+                    
+                    for doc_dir in doc_dirs:
+                        md_files = list(doc_dir.rglob("*.md"))
+                        if md_files:
+                            pdf_path = str(pdf_files[0]) if pdf_files else None
+                            files.append({
+                                "task_id": task_dir.name,
+                                "name": doc_dir.name,
+                                "taskPath": str(task_dir),
+                                "pdfPath": pdf_path,
+                                "md_count": len(md_files),
+                                "status": "completed",
+                                "modified": datetime.fromtimestamp(task_dir.stat().st_mtime).isoformat(),
+                            })
+                except Exception as e:
+                    logger.warning(f"Error listing {task_dir}: {e}")
+    
+    files.sort(key=lambda x: x["modified"], reverse=True)
+    return {"files": files}
+
+
+@app.get(path="/api/list-demo-files")
+async def list_demo_files():
+    demo_dir = Path("demo")
+    files = []
+    
+    if demo_dir.exists() and demo_dir.is_dir():
+        for item in demo_dir.rglob("*"):
+            if item.is_file():
+                try:
+                    files.append({
+                        "name": item.name,
+                        "type": "file",
+                        "path": str(item),
+                        "size": item.stat().st_size,
+                        "modified": datetime.fromtimestamp(item.stat().st_mtime).isoformat(),
+                    })
+                except Exception as e:
+                    logger.warning(f"Error listing {item}: {e}")
+    
+    files.sort(key=lambda x: x["modified"], reverse=True)
+    return {"files": files}
+
+
+@app.get(path="/api/get-file/{file_path:path}")
+async def get_file(file_path: str):
+    try:
+        full_path = Path(file_path)
+        
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        if not full_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        
+        content_type, _ = mimetypes.guess_type(str(full_path))
+        if content_type is None:
+            content_type = "application/octet-stream"
+        
+        return FileResponse(
+            path=str(full_path),
+            media_type=content_type,
+            filename=full_path.name
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(path="/api/download-result/{task_id}")
+async def download_result(task_id: str):
+    try:
+        task_dir = Path("output") / task_id
+        
+        if not task_dir.exists():
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in task_dir.rglob("*"):
+                if file_path.is_file():
+                    zipf.write(file_path, file_path.relative_to(task_dir))
+        
+        zip_buffer.seek(0)
+        
+        return Response(
+            content=zip_buffer.read(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={task_id}.zip"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(path="/api/get-file-content/{file_path:path}")
+async def get_file_content(file_path: str):
+    try:
+        full_path = Path(file_path)
+        
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        if not full_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        
+        content = full_path.read_text(encoding="utf-8")
+        return {"content": content, "filename": full_path.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+from pydantic import BaseModel as _BaseModel
+
+
+class AiSettingsBody(_BaseModel):
+    api_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    prompt: str = ""
+
+
+@app.get(path="/api/ai-settings", summary="Get AI model settings")
+async def get_ai_settings():
+    conn = _get_settings_db()
+    try:
+        rows = conn.execute("SELECT key, value FROM ai_settings").fetchall()
+        settings = {row["key"]: row["value"] for row in rows}
+        return {
+            "api_url": settings.get("api_url", ""),
+            "api_key": settings.get("api_key", ""),
+            "model": settings.get("model", ""),
+            "prompt": settings.get("prompt", ""),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post(path="/api/ai-settings", summary="Save AI model settings")
+async def save_ai_settings(body: AiSettingsBody):
+    conn = _get_settings_db()
+    try:
+        conn.execute("DELETE FROM ai_settings")
+        items = [
+            ("api_url", body.api_url),
+            ("api_key", body.api_key),
+            ("model", body.model),
+            ("prompt", body.prompt),
+        ]
+        conn.executemany(
+            "INSERT INTO ai_settings (key, value) VALUES (?, ?)", items
+        )
+        conn.commit()
+        return {"message": "设置已保存"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+class AiSummarizeBody(_BaseModel):
+    markdown: str
+    api_url: str
+    api_key: str
+    prompt: str
+    model: str = "default"
+
+
+@app.post(path="/api/ai-summarize", summary="AI summarize markdown content via vLLM")
+async def ai_summarize(body: AiSummarizeBody):
+    if not body.markdown or not body.markdown.strip():
+        raise HTTPException(status_code=400, detail="markdown 内容不能为空")
+    if not body.api_url:
+        raise HTTPException(status_code=400, detail="api_url 不能为空")
+    if not body.api_key:
+        raise HTTPException(status_code=400, detail="api_key 不能为空")
+
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="openai 包未安装，请执行 pip install openai",
+        )
+
+    async def _stream():
+        try:
+            client = AsyncOpenAI(api_key=body.api_key, base_url=body.api_url)
+            messages = [
+                {"role": "system", "content": body.prompt},
+                {"role": "user", "content": body.markdown},
+            ]
+            completion = await client.chat.completions.create(
+                model=body.model,
+                messages=messages,
+                temperature=0.7,
+                stream=True,
+            )
+            async for chunk in completion:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    yield f"data: {json.dumps({'content': delta.content}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as exc:
+            error_msg = str(exc)
+            if "Connection" in error_msg or "connect" in error_msg.lower():
+                friendly = "AI 服务不可达，请检查 API URL 是否正确"
+            elif "auth" in error_msg.lower() or "401" in error_msg:
+                friendly = "API Key 无效，请检查配置"
+            elif "timeout" in error_msg.lower():
+                friendly = "AI 请求超时，请稍后重试"
+            else:
+                friendly = f"AI 总结失败: {error_msg}"
+            yield f"data: {json.dumps({'error': friendly}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get(path="/tasks/{task_id}/pdf-page/{page_num}", name="get_pdf_page_image")
+async def get_pdf_page_image(task_id: str, page_num: int, dpi: int = 150):
+    import pypdfium2 as pdfium
+    from mineru.utils.pdfium_guard import open_pdfium_document, close_pdfium_document
+    from mineru.utils.pdf_reader import page_to_image, image_to_bytes
+
+    output_root = get_output_root()
+    task_dir = output_root / task_id
+    if not task_dir.exists():
+        raise HTTPException(status_code=404, detail="Task directory not found")
+
+    uploads_dir = task_dir / "uploads"
+    pdf_path = None
+    if uploads_dir.exists():
+        for f in uploads_dir.iterdir():
+            if f.suffix.lower() == ".pdf":
+                pdf_path = f
+                break
+
+    if pdf_path is None:
+        raise HTTPException(status_code=404, detail="PDF file not found in task uploads")
+
+    pdf_doc = None
+    try:
+        pdf_doc = open_pdfium_document(pdfium.PdfDocument, str(pdf_path))
+        total_pages = len(pdf_doc)
+
+        if page_num == 0:
+            return JSONResponse(content={"page_count": total_pages})
+
+        if page_num < 1 or page_num > total_pages:
+            raise HTTPException(status_code=400, detail=f"Page number must be between 1 and {total_pages}")
+
+        page = pdf_doc[page_num - 1]
+        pil_img, _ = page_to_image(page, dpi=dpi)
+        img_bytes = image_to_bytes(pil_img, image_format="PNG")
+
+        return Response(
+            content=img_bytes,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to render PDF page: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to render PDF page: {str(e)}")
+    finally:
+        if pdf_doc is not None:
+            close_pdfium_document(pdf_doc)
 
 
 @app.get(path="/health")
@@ -1622,7 +2016,7 @@ def main(
     warn_if_public_http_client_policy(host, allow_public_http_client)
     access_log = not env_flag_enabled("MINERU_API_DISABLE_ACCESS_LOG")
 
-    print(f"Start MinerU FastAPI Service: http://{host}:{port}")
+    print(f"Start LinkCell FastAPI Service: http://{host}:{port}")
     print(f"API documentation: http://{host}:{port}/docs")
 
     if reload:

@@ -17,7 +17,7 @@ CUDA_PROVIDER_OPTS = {
 
 
 def _normalize_device(device: object) -> str:
-    """归一化 MinerU 设备名，兼容 cuda:0 这类带索引的写法。"""
+    """归一化 LinkCell 设备名，兼容 cuda:0 这类带索引的写法。"""
     if not isinstance(device, str):
         return ""
     return device.split(":", 1)[0].strip().lower()
@@ -35,12 +35,12 @@ def _build_cuda_provider() -> Tuple[str, dict[str, Any]]:
 def build_table_onnx_providers(
     available_providers: Sequence[str],
 ) -> List[Tuple[str, dict[str, Any]]]:
-    """根据 MinerU 当前设备为表格 ONNX 模型选择 onnxruntime providers。"""
+    """根据 LinkCell 当前设备为表格 ONNX 模型选择 onnxruntime providers。"""
     cpu_provider = _build_cpu_provider()
     cuda_provider = _build_cuda_provider()
     device = _normalize_device(get_device())
 
-    # 只有 MinerU 设备明确为 CUDA 时才尝试 CUDAExecutionProvider，保持默认 CPU 行为。
+    # 只有 LinkCell 设备明确为 CUDA 时才尝试 CUDAExecutionProvider，保持默认 CPU 行为。
     if device != "cuda":
         return [cpu_provider]
 

@@ -206,7 +206,7 @@ def main() -> None:
     input_path = demo_dir / "pdfs"
     # Parsed outputs will be extracted into this directory.
     output_dir = demo_dir / "api_output"
-    # Set this to an existing MinerU FastAPI base URL, for example:
+    # Set this to an existing LinkCell FastAPI base URL, for example:
     # "http://127.0.0.1:8000"
     # Leave it as None to start a temporary local mineru-api automatically.
     api_url = None
@@ -219,7 +219,7 @@ def main() -> None:
     # "hybrid-http-client"   -> remote OpenAI-compatible hybrid server
     backend = "hybrid-auto-engine"
     # Available options:
-    # "auto" -> let MinerU choose between text extraction and OCR
+    # "auto" -> let LinkCell choose between text extraction and OCR
     # "txt"  -> force text extraction
     # "ocr"  -> force OCR
     parse_method = "auto"

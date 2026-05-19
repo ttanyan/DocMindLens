@@ -979,7 +979,7 @@ async def run_orchestrated_cli(
     "api_url",
     type=str,
     default=None,
-    help="MinerU FastAPI base URL. If omitted, mineru starts a temporary local mineru-api service.",
+    help="LinkCell FastAPI base URL. If omitted, mineru starts a temporary local mineru-api service.",
 )
 @click.option(
     "-m",

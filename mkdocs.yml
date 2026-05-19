@@ -1,6 +1,6 @@
-site_name: MinerU
+site_name: LinkCell
 site_url: https://opendatalab.github.io/MinerU
-repo_name: opendatalab/MinerU
+repo_name: opendatalab/LinkCell
 repo_url: https://github.com/opendatalab/MinerU
 
 theme:
@@ -69,7 +69,7 @@ extra:
       link: mailto:OpenDataLab@pjlab.org.cn
       name: E-mail
 
-copyright: © 2024 - 2025 MinerU. All Rights Reserved.
+copyright: © 2024 - 2025 LinkCell. All Rights Reserved.
 
 nav:
   - Home:

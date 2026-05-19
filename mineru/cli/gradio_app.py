@@ -1128,7 +1128,7 @@ def update_doc_show(file_path):
     '--api-url',
     'api_url',
     type=str,
-    help="MinerU FastAPI base URL. If omitted, gradio starts a reusable local mineru-api service.",
+    help="LinkCell FastAPI base URL. If omitted, gradio starts a reusable local mineru-api service.",
     default=None,
 )
 @click.option(

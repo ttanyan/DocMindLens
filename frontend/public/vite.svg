@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" aria-hidden="true" role="img">
+  <defs>
+    <linearGradient id="doc-ai-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F0FF" />
+      <stop offset="100%" stop-color="#007BFF" />
+    </linearGradient>
+    <filter id="tech-glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur" />
+      <feMerge>
+        <feMergeNode in="coloredBlur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Document Icon Base -->
+  <path
+    d="M60 20 L160 20 L200 60 L200 220 C200 231.046 191.046 240 180 240 L60 240 C48.954 240 40 231.046 40 220 L40 40 C40 28.954 48.954 20 60 20 Z"
+    fill="none"
+    stroke="url(#doc-ai-gradient)"
+    stroke-width="8"
+    filter="url(#tech-glow)"
+  />
+
+  <!-- Folded Corner -->
+  <path
+    d="M160 20 L160 60 L200 60"
+    fill="none"
+    stroke="url(#doc-ai-gradient)"
+    stroke-width="8"
+    stroke-linejoin="round"
+    filter="url(#tech-glow)"
+  />
+
+  <!-- AI / Tech Circuit Lines inside document -->
+  <path
+    d="M70 100 L110 100 L130 120 L170 120"
+    fill="none"
+    stroke="url(#doc-ai-gradient)"
+    stroke-width="6"
+    stroke-linecap="round"
+    filter="url(#tech-glow)"
+  />
+
+  <path
+    d="M70 140 L100 140 L120 160 L180 160"
+    fill="none"
+    stroke="url(#doc-ai-gradient)"
+    stroke-width="6"
+    stroke-linecap="round"
+    filter="url(#tech-glow)"
+  />
+
+  <!-- AI Node/Circle -->
+  <circle
+    cx="180"
+    cy="160"
+    r="6"
+    fill="#00F0FF"
+    filter="url(#tech-glow)"
+  />
+
+  <circle
+    cx="70"
+    cy="100"
+    r="6"
+    fill="#00F0FF"
+    filter="url(#tech-glow)"
+  />
+</svg>
